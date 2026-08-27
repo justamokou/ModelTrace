@@ -10,7 +10,6 @@ from typing import Iterable
 
 import numpy as np
 
-
 VALUE_MIN = 1
 VALUE_MAX = 355
 DIMENSION = VALUE_MAX - VALUE_MIN + 1
@@ -18,11 +17,6 @@ ALPHA = 0.5
 ORDERED_BLOCK_WEIGHT = 0.25
 DEFAULT_BANK = Path(__file__).with_name("data") / "gpt_bank.json"
 FAMILY_DISPLAY_NAMES = {"gpt": "GPT", "claude": "Claude"}
-FAMILY_GATE_CALIBRATION = {
-    "1": {"beta": 3.448920538621421, "cv_accuracy": 0.9629629629629629},
-    "2": {"beta": 6.216642555777372, "cv_accuracy": 0.9861111111111112},
-    "3": {"beta": 12.0, "cv_accuracy": 1.0},
-}
 
 
 def parse_numbers(text: str) -> list[int]:
@@ -162,154 +156,58 @@ def load_bank(path: Path = DEFAULT_BANK) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def fit_family_gate(rows_by_family: dict[str, list[dict]]) -> dict:
-    family_order = list(rows_by_family)
-    rows = [row for family_id in family_order for row in rows_by_family[family_id]]
-    model_order = list(dict.fromkeys(row["source"] for row in rows))
-    labels = np.asarray([row["source"] for row in rows])
-    model_families = [
-        family_id
-        for model_id in model_order
-        for family_id in family_order
-        if any(row["source"] == model_id for row in rows_by_family[family_id])
-    ]
-    features = np.stack([hellinger_feature(row["counts"]) for row in rows])
-    mean = features.mean(axis=0)
-    scale = features.std(axis=0)
-    scale[scale < 1e-12] = 1.0
-    standardized = (features - mean) / scale
-    centroids = np.stack(
-        [standardized[labels == model_id].mean(axis=0) for model_id in model_order]
-    )
-    centroids /= np.maximum(np.linalg.norm(centroids, axis=1, keepdims=True), 1e-12)
-    normalized = standardized / np.maximum(
-        np.linalg.norm(standardized, axis=1, keepdims=True), 1e-12
-    )
-    model_scores = normalized @ centroids.T
-    family_scores = np.stack(
-        [
-            model_scores[:, np.asarray([item == family_id for item in model_families])].max(axis=1)
-            for family_id in family_order
-        ],
-        axis=1,
-    )
-    if len(family_order) == 2:
-        family_score_scale = max(
-            float(np.std(family_scores[:, 0] - family_scores[:, 1])), 1e-12
+def analyze_global_outputs(outputs: list[dict], bank: dict) -> dict:
+    result = analyze_outputs(outputs, bank)
+    model_entries = {model["id"]: model for model in bank["models"]}
+    family_order = list(
+        dict.fromkeys(
+            model.get("family") or "models"
+            for model in bank["models"]
         )
-    else:
-        centered = family_scores - family_scores.mean(axis=1, keepdims=True)
-        family_score_scale = max(float(np.std(centered)), 1e-12)
-    return {
-        "family_order": family_order,
-        "model_order": model_order,
-        "model_families": model_families,
-        "aggregation": "maximum model-centroid similarity within each family",
-        "feature_mean": mean.tolist(),
-        "feature_scale": scale.tolist(),
-        "centroids": centroids.tolist(),
-        "family_score_scale": family_score_scale,
-        "calibration": FAMILY_GATE_CALIBRATION,
-    }
-
-
-def family_score_numbers(numbers: list[int], gate: dict) -> list[float]:
-    feature = hellinger_feature(count_numbers(numbers))
-    mean = np.asarray(gate["feature_mean"], dtype=np.float64)
-    scale = np.asarray(gate["feature_scale"], dtype=np.float64)
-    standardized = (feature - mean) / scale
-    normalized = standardized / max(float(np.linalg.norm(standardized)), 1e-12)
-    model_scores = normalized @ np.asarray(gate["centroids"], dtype=np.float64).T
-    family_scores = [
-        max(
-            model_scores[index]
-            for index, family_id in enumerate(gate["model_families"])
-            if family_id == target_family
+    )
+    family_names = {
+        family_id: next(
+            (
+                model.get("family_name")
+                for model in bank["models"]
+                if (model.get("family") or "models") == family_id
+                and model.get("family_name")
+            ),
+            FAMILY_DISPLAY_NAMES.get(family_id, family_id),
         )
-        for target_family in gate["family_order"]
-    ]
-    scale = gate["family_score_scale"]
-    if len(family_scores) == 2:
-        margin = float((family_scores[0] - family_scores[1]) / scale)
-        return [margin, -margin]
-    center = sum(family_scores) / len(family_scores)
-    return [float((score - center) / scale) for score in family_scores]
-
-
-def analyze_unified_outputs(outputs: list[dict], banks: dict[str, dict], family_gate: dict) -> dict:
-    family_order = family_gate["family_order"]
-    conditional = {
-        family_id: analyze_outputs(outputs, banks[family_id])
         for family_id in family_order
     }
-    diagnostics = conditional[family_order[0]]["diagnostics"]
-    valid_numbers = [
-        parse_numbers(str(item.get("text", "")))
-        for item, diagnostic in zip(outputs, diagnostics)
-        if diagnostic["accepted"]
-    ]
-    family_scores = [family_score_numbers(numbers, family_gate) for numbers in valid_numbers]
-    combined_family_scores = [
-        sum(scores[index] for scores in family_scores) / len(family_scores)
-        for index in range(len(family_order))
-    ]
-    calibration_key = str(min(len(valid_numbers), 3))
-    family_calibration = family_gate["calibration"][calibration_key]
-    family_probabilities = softmax(
-        [family_calibration["beta"] * score for score in combined_family_scores]
-    )
-
-    results = []
-    for family_index, family_id in enumerate(family_order):
-        for item in conditional[family_id]["results"]:
-            results.append(
-                {
-                    **item,
-                    "family": family_id,
-                    "family_name": banks[family_id].get(
-                        "family_name", FAMILY_DISPLAY_NAMES.get(family_id, family_id)
-                    ),
-                    "conditional_probability": item["probability"],
-                    "probability": family_probabilities[family_index] * item["probability"],
-                }
-            )
-    results.sort(key=lambda item: item["probability"], reverse=True)
-    winning_family_index = max(
-        range(len(family_order)), key=lambda index: family_probabilities[index]
-    )
-    winning_family = family_order[winning_family_index]
+    family_probabilities = {
+        family_id: sum(
+            item["probability"]
+            for item in result["results"]
+            if (model_entries[item["model"]].get("family") or "models") == family_id
+        )
+        for family_id in family_order
+    }
+    for item in result["results"]:
+        model = model_entries[item["model"]]
+        family_id = model.get("family") or "models"
+        item["family"] = family_id
+        item["family_name"] = family_names[family_id]
+        item["conditional_probability"] = (
+            item["probability"] / family_probabilities[family_id]
+        )
+    winning_family = max(family_order, key=family_probabilities.get)
     return {
-        "prediction": results[0]["model"],
-        "prediction_name": results[0]["display_name"],
-        "probability": results[0]["probability"],
-        "used_outputs": len(valid_numbers),
-        "results": results,
-        "diagnostics": diagnostics,
+        **result,
         "family_prediction": winning_family,
-        "family_prediction_name": banks[winning_family].get(
-            "family_name", FAMILY_DISPLAY_NAMES.get(winning_family, winning_family)
-        ),
-        "family_probability": family_probabilities[winning_family_index],
+        "family_prediction_name": family_names[winning_family],
+        "family_probability": family_probabilities[winning_family],
         "family_probabilities": [
             {
                 "family": family_id,
-                "display_name": banks[family_id].get(
-                    "family_name", FAMILY_DISPLAY_NAMES.get(family_id, family_id)
-                ),
-                "probability": family_probabilities[index],
+                "display_name": family_names[family_id],
+                "probability": family_probabilities[family_id],
             }
-            for index, family_id in enumerate(family_order)
-        ],
-        "calibration": {
-            "queries": calibration_key,
-            "family_beta": family_calibration["beta"],
-            "family_cv_accuracy": family_calibration["cv_accuracy"],
-        },
-        "conditional_calibration": {
-            family_id: conditional[family_id]["calibration"]
             for family_id in family_order
-        },
-        "method": "统一模型质心家族门控 + 家族内稳健数字指纹",
+        ],
+        "method": "统一全局稳健数字指纹",
     }
 
 
@@ -384,25 +282,25 @@ def generate_challenges(count: int = 3) -> list[dict]:
     rng = random.SystemRandom()
     lengths = rng.sample(range(292, 333), count)
     openings = [
-        "这是一次独立的数值流采样",
-        "请完成下面的无语义整数流任务",
-        "执行一次直觉随机取值记录",
-        "生成一段不承载语义的整数序列",
-        "进行一轮快速数字采样",
+        "这是一次独立的数值选择记录",
+        "请完成下面的无语义整数选择任务",
+        "执行一次第一反应取值记录",
+        "生成一组不承载语义的整数选择",
+        "进行一轮快速逐项取值",
     ]
     actions = [
-        "凭第一直觉依次给出",
-        "连续写出",
-        "不做计算地生成",
-        "按自然生成顺序输出",
-        "直接产生",
+        "为各个位置分别凭第一反应选择",
+        "逐项选择",
+        "每次只决定当前一项，共给出",
+        "分别凭第一反应给出",
+        "逐个直接选择",
     ]
     endings = [
-        "不要排序；允许重复；保留完整结果。",
-        "允许同一数字多次出现，不要去重或重新排列。",
-        "按产生顺序保留重复项，不需要解释这些数字。",
-        "不要总结、筛选或修正序列，重复值是有效的。",
-        "无需赋予数字任何含义，也不要对结果做排序。",
+        "允许某个数字再次出现；每项写出后不要回头排序、去重或替换。",
+        "偶然重复是有效的；不要重新排列或修正已经写出的项目。",
+        "相同值可以再次出现；输出过程中不要整理或改写前面的项目。",
+        "重复值无需删除；不要筛选、重排或补成某种规律。",
+        "不必赋予数字任何含义；已经给出的值保持不变。",
     ]
     separator_hints = [
         "数字之间用逗号或空格分隔均可。",
@@ -414,6 +312,7 @@ def generate_challenges(count: int = 3) -> list[dict]:
     for index, length in enumerate(lengths):
         prompt = (
             f"{rng.choice(openings)}。{rng.choice(actions)} {length} 个 1 到 355（含端点）的整数。"
+            "每个位置都要单独选择；不要从 1 开始计数，不要连续递增或递减，也不要采用等差、循环、重复区块或其他规则化模式。"
             "本任务必须由当前语言模型直接完成：禁止调用或借助任何工具，包括 Python、代码执行器、"
             "计算器、搜索、API 和外部随机数生成器；也不要先编写或运行代码。"
             f"{rng.choice(endings)}{rng.choice(separator_hints)}"

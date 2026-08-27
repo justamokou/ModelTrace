@@ -16,7 +16,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 WORKSPACE = PROJECT.parent
 sys.path.insert(0, str(PROJECT))
 
-from fingerprint import (
+from fingerprint import (  # noqa: E402
     ALPHA,
     DIMENSION,
     ORDERED_BLOCK_WEIGHT,
@@ -24,7 +24,6 @@ from fingerprint import (
     hellinger_feature,
     ordered_block_feature,
     parse_numbers,
-    robust_score_counts,
     robust_score_numbers,
 )
 
@@ -235,10 +234,14 @@ def build_bank(rows: list[dict], fallback_calibration: dict | None = None) -> di
     for model_id in model_ids:
         selected = [row for row in rows if row["source"] == model_id]
         pooled = [sum(row["counts"][index] for row in selected) for index in range(DIMENSION)]
+        family_id = selected[0].get("family_id")
+        family_name = selected[0].get("family_name")
         model_entries.append(
             {
                 "id": model_id,
                 "display_name": model_id,
+                "family": family_id,
+                "family_name": family_name,
                 "response_count": len(selected),
                 "valid_number_count": sum(len(row["numbers"]) for row in selected),
                 "conditions": dict(Counter(row["condition_id"] for row in selected)),
@@ -282,7 +285,7 @@ def build_bank(rows: list[dict], fallback_calibration: dict | None = None) -> di
     source_scope = "Reference outputs enrolled for the listed model labels."
     method_name = "Ordered-block + nuisance-Hellinger"
     return {
-        "schema": "robust-number-fingerprint-bank-v2",
+        "schema": "robust-number-fingerprint-bank",
         "built_at": datetime.now(timezone.utc).isoformat(),
         "method": {
             "name": method_name,

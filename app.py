@@ -8,14 +8,15 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
-from enrollment import BENCHMARK_SYSTEM_PREAMBLE, bank_summary, enroll_automatic, request_completion, test_automatic
-from fingerprint import analyze_unified_outputs, fit_family_gate, generate_challenges, load_bank, parse_numbers
-from bank_builder import read_rows
+from enrollment import bank_summary, enroll_automatic, request_completion, test_automatic
+from fingerprint import analyze_global_outputs, generate_challenges, load_bank, parse_numbers
+from bank_builder import build_bank, read_rows
 
 
 app = Flask(__name__)
 PROJECT = Path(__file__).resolve().parent
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
+UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
 DEFAULT_BANK_ID = "claude"
 
 
@@ -78,15 +79,34 @@ def active_banks() -> dict[str, dict]:
     }
 
 
-def build_current_family_gate() -> dict:
-    rows_by_family = {
-        bank_id: read_rows(BANK_CONFIGS[bank_id]["data_file"])
-        for bank_id in active_banks()
-    }
-    return fit_family_gate(rows_by_family)
+def global_reference_rows() -> list[dict]:
+    rows = []
+    for bank_id in active_banks():
+        config = BANK_CONFIGS[bank_id]
+        rows.extend(
+            {
+                **row,
+                "family_id": bank_id,
+                "family_name": config["label"],
+            }
+            for row in read_rows(config["data_file"])
+        )
+    return rows
 
 
-family_gate = build_current_family_gate()
+def rebuild_global_bank() -> dict:
+    global unified_bank
+    unified_bank = build_bank(global_reference_rows())
+    UNIFIED_BANK_FILE.write_text(
+        json.dumps(unified_bank, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return unified_bank
+
+
+unified_bank = load_bank(UNIFIED_BANK_FILE) if UNIFIED_BANK_FILE.exists() else None
+if unified_bank is None:
+    rebuild_global_bank()
 
 
 def requested_bank_id(payload: dict | None = None) -> str:
@@ -131,9 +151,8 @@ def summarized_unified_bank() -> dict:
 
 
 def replace_bank(bank_id: str) -> None:
-    global family_gate
     banks[bank_id] = load_configured_bank(bank_id)
-    family_gate = build_current_family_gate()
+    rebuild_global_bank()
 
 
 @app.get("/")
@@ -157,7 +176,7 @@ def challenges():
 def analyze():
     try:
         payload = request.get_json()
-        result = analyze_unified_outputs(payload["outputs"], active_banks(), family_gate)
+        result = analyze_global_outputs(payload["outputs"], unified_bank)
         result["bank"] = summarized_unified_bank()
         return jsonify(result)
     except ValueError as error:
@@ -173,8 +192,7 @@ def automatic_test():
             api_key=payload["api_key"],
             api_model=payload["api_model"].strip(),
             temperature=requested_temperature(payload),
-            banks=active_banks(),
-            family_gate=family_gate,
+            bank=unified_bank,
             api_format="auto",
         )
         result["bank"] = summarized_unified_bank()
@@ -194,7 +212,6 @@ def automatic_test_probe():
             prompt=payload["prompt"],
             temperature=requested_temperature(payload),
             api_format="auto",
-            system_prompt=BENCHMARK_SYSTEM_PREAMBLE,
         )
         expected_count = int(payload["expected_count"])
         parsed_numbers = len(parse_numbers(text))
@@ -269,7 +286,7 @@ def automatic_enrollment():
             api_format="auto",
             data_file=config["data_file"],
             bank_file=config["bank_file"],
-            bank_id=f"{bank_id}-v1",
+            bank_id=bank_id,
             provider="api",
         )
         replace_bank(bank_id)

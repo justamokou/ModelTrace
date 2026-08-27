@@ -6,7 +6,7 @@ import webbrowser
 
 sys.dont_write_bytecode = True
 
-from app import app
+from app import app  # noqa: E402
 
 
 if __name__ == "__main__":

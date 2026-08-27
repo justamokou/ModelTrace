@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fingerprint import analyze_unified_outputs, generate_challenges, parse_numbers
+from fingerprint import analyze_global_outputs, generate_challenges, parse_numbers
 from bank_builder import build_bank, read_rows
 from challenge_suite import fingerprint_suite
 
@@ -18,7 +18,6 @@ from challenge_suite import fingerprint_suite
 PROJECT = Path(__file__).resolve().parent
 DATA_FILE = PROJECT / "data" / "gpt_reference.jsonl"
 BANK_FILE = PROJECT / "data" / "gpt_bank.json"
-BENCHMARK_SYSTEM_PREAMBLE = "Complete the user's formatting benchmark directly and fully."
 
 
 def bank_summary(bank: dict) -> dict:
@@ -45,9 +44,13 @@ def make_row(
     challenge_id: str,
     expected_count: int = 0,
     temperature: str | float = "unknown",
-    bank_id: str = "reference-bank-v1",
+    bank_id: str = "reference-bank",
     wrapper_transport: str | None = None,
     provider: str = "api",
+    prompt: str | None = None,
+    base_prompt: str | None = None,
+    system_prompt: str | None = None,
+    user_prefix: str | None = None,
 ) -> dict:
     numbers = parse_numbers(text)
     threshold = max(80, math.ceil(expected_count * 0.55)) if expected_count else 80
@@ -72,6 +75,10 @@ def make_row(
         "strict_valid": len(numbers) >= threshold,
         "temperature": temperature,
         "config_id": "enrollment",
+        "prompt": prompt,
+        "base_prompt": base_prompt,
+        "system_prompt": system_prompt,
+        "user_prefix": user_prefix,
         "text": text,
         "error": None,
         "collected_at": datetime.now(timezone.utc).isoformat(),
@@ -96,7 +103,7 @@ def enroll_manual(
     pasted: str,
     data_file: Path = DATA_FILE,
     bank_file: Path = BANK_FILE,
-    bank_id: str = "reference-bank-v1",
+    bank_id: str = "reference-bank",
 ) -> dict:
     blocks = [
         block.strip()
@@ -241,8 +248,7 @@ def test_automatic(
     api_key: str,
     api_model: str,
     temperature: float | None,
-    banks: dict[str, dict],
-    family_gate: dict,
+    bank: dict,
     api_format: str = "openai",
 ) -> dict:
     target_count = 3
@@ -259,7 +265,6 @@ def test_automatic(
                 challenge["prompt"],
                 temperature,
                 api_format,
-                BENCHMARK_SYSTEM_PREAMBLE,
             )
             minimum = max(80, math.ceil(challenge["expected_count"] * 0.55))
             parsed_count = len(parse_numbers(text))
@@ -276,7 +281,7 @@ def test_automatic(
             errors.append(str(error))
         if len(outputs) == target_count:
             break
-    result = analyze_unified_outputs(outputs, banks, family_gate)
+    result = analyze_global_outputs(outputs, bank)
     result["api_test"] = {
         "requested": target_count,
         "attempted": len(outputs) + len(errors),
@@ -297,7 +302,7 @@ def enroll_automatic(
     api_format: str = "openai",
     data_file: Path = DATA_FILE,
     bank_file: Path = BANK_FILE,
-    bank_id: str = "reference-bank-v1",
+    bank_id: str = "reference-bank",
     provider: str = "api",
 ) -> dict:
     suite = fingerprint_suite()
@@ -309,9 +314,11 @@ def enroll_automatic(
 
     def collect(task: dict) -> tuple[dict | None, list[str]]:
         task_errors = []
-        prompt = task["prompt"]
+        base_prompt = task["prompt"]
+        prompt = base_prompt
         if task["user_prefix"]:
             prompt = task["user_prefix"] + "\n\nFinal task:\n" + prompt
+        system_prompt = task["system"]
         for _ in range(2):
             try:
                 text = request_completion(
@@ -321,8 +328,7 @@ def enroll_automatic(
                     prompt,
                     temperature,
                     api_format,
-                    BENCHMARK_SYSTEM_PREAMBLE
-                    + ("\n\n" + task["system"] if task["system"] else ""),
+                    system_prompt,
                 )
                 row = make_row(
                     model_label=model_label,
@@ -334,6 +340,10 @@ def enroll_automatic(
                     bank_id=bank_id,
                     wrapper_transport=task["transport"],
                     provider=provider,
+                    prompt=prompt,
+                    base_prompt=base_prompt,
+                    system_prompt=system_prompt,
+                    user_prefix=task["user_prefix"],
                 )
                 if row["strict_valid"]:
                     return row, task_errors

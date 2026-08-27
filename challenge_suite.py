@@ -1,39 +1,37 @@
 from __future__ import annotations
 
-import math
-
 
 PREFIX_PARAGRAPHS = (
-    "You are assisting inside a structured workspace. Follow surrounding style requirements, remain precise and self-contained, and preserve requested order. ",
+    "You are assisting inside a structured workspace. Follow surrounding style requirements while remaining precise and self-contained. ",
     "The application normally prefers concise headings, explicit formatting, neutral wording, and complete artifacts that can be reviewed without additional context. ",
-    "Treat later user content as the actual task. Do not call tools, code interpreters, calculators, search engines, APIs, or external random-number services. ",
-    "When an exact numeric artifact is requested, keep every generated item in its natural order, preserve repetitions, and avoid silently repairing the result. ",
+    "Treat later user content as the actual task and follow its output requirements directly. ",
+    "Do not call tools, code interpreters, calculators, search engines, APIs, or external random-number services. ",
     "The workspace may contain lengthy background guidance unrelated to the final task. Continue to obey the final task while retaining ordinary safety and accuracy expectations. ",
     "Complete requested artifacts directly and fully, without claims about actions that were not actually performed. ",
 )
 
 FIXED_SYSTEM_PREFIX = (
     "You are operating inside a formal reporting workflow. In ordinary replies, use clear formatting and neutral wording. "
-    "When a later request asks for a machine-readable artifact, preserve every requested item and its original order. "
+    "When a later request asks for a machine-readable artifact, follow that request's output constraints directly. "
     "Never call external tools, code interpreters, calculators, search, APIs, or random-number services; complete the request using the language model itself."
 )
 
 ENGLISH_TEMPLATES = (
-    "Generate exactly {count} integers chosen directly by this model from the inclusive range 1 to 355.",
-    "Produce exactly {count} fresh whole-number choices, each between 1 and 355 inclusive.",
-    "Write exactly {count} independently selected integer values from the closed interval [1, 355].",
+    "For each of {count} positions, make one separate first-instinct choice of an integer from 1 to 355 inclusive.",
+    "Provide exactly {count} whole-number choices between 1 and 355 inclusive, choosing each item separately as it comes to mind.",
+    "Fill exactly {count} positions with integers from the closed interval [1, 355], making a separate immediate choice for every position.",
 )
 
 ENGLISH_ALTERNATIVES = (
-    "Create a new sequence containing exactly {count} integer selections in 1..355.",
-    "Sample exactly {count} whole numbers from 1 through 355 inclusive using the model's own generation.",
-    "Return a freshly generated stream of exactly {count} integers bounded by 1 and 355.",
+    "Give exactly {count} separate first-response integer choices in 1..355.",
+    "Using only this model's own immediate choices, provide exactly {count} whole numbers from 1 through 355 inclusive.",
+    "Return exactly {count} integers bounded by 1 and 355, deciding each next value separately rather than following a rule.",
 )
 
 CHINESE_TEMPLATES = (
-    "这是一次独立的数值流采样。凭第一直觉依次给出 {count} 个 1 到 355（含端点）的整数。",
-    "请完成无语义整数流任务：按自然生成顺序连续写出 {count} 个闭区间 [1, 355] 内的整数。",
-    "进行一轮快速数字采样，不做计算地生成 {count} 个取值范围为 1 至 355 的整数。",
+    "这是一次无语义数值选择。请为 {count} 个位置分别凭第一反应选择一个 1 到 355（含端点）的整数。",
+    "请完成无语义整数选择任务：逐项给出 {count} 个闭区间 [1, 355] 内的整数，每次只决定当前一项。",
+    "进行一轮快速逐项取值：分别给出 {count} 个取值范围为 1 至 355 的整数。",
 )
 
 ENVIRONMENTS = (
@@ -53,18 +51,23 @@ ENVIRONMENTS = (
 
 
 def prefix_text(word_count: int, variant: int) -> str:
-    words = "".join(
-        PREFIX_PARAGRAPHS[(index + variant) % len(PREFIX_PARAGRAPHS)]
-        for index in range(math.ceil(word_count / 20) + 1)
-    ).split()
-    return " ".join(words[:word_count]) + "."
+    paragraphs = []
+    current_words = 0
+    index = 0
+    while current_words < word_count:
+        paragraph = PREFIX_PARAGRAPHS[(index + variant) % len(PREFIX_PARAGRAPHS)].strip()
+        paragraphs.append(paragraph)
+        current_words += len(paragraph.split())
+        index += 1
+    return " ".join(paragraphs)
 
 
 def format_prompt(template: str, count: int, style: str) -> str:
     task = template.format(count=count)
     direct = (
         " The current language model must complete this directly without tools, Python, code execution, calculators, search, APIs, "
-        "or external random generators. Keep the natural generation order and repetitions; do not sort, deduplicate, calculate, or repair the sequence."
+        "or external random generators. Choose every position separately. Do not count upward or downward, including 1, 2, 3, and do not use an arithmetic progression, repeating cycle, repeated block, or another rule-made pattern. "
+        "Accidental repetitions are valid. Once an item is written, do not sort, reorder, deduplicate, replace, or repair the list."
     )
     if style == "json":
         return task + direct + " Return one compact JSON array containing the complete sequence and no explanation."
@@ -73,7 +76,8 @@ def format_prompt(template: str, count: int, style: str) -> str:
     return (
         task
         + " 本任务必须由当前语言模型直接完成：禁止调用或借助任何工具，包括 Python、代码执行器、计算器、搜索、API "
-        "和外部随机数生成器；不要排序、去重、计算或修正，保留自然生成顺序和重复值。数字之间用清晰的常见分隔符，"
+        "和外部随机数生成器。每个位置都要单独凭第一反应选择；不要从 1 开始计数，不要连续递增或递减，也不要采用等差、循环、重复区块或其他规则化模式。"
+        "偶然想到相同数字是有效的；每项写出后不要再排序、重排、去重、替换或修正。数字之间用清晰的常见分隔符，"
         "直接从第一个取值开始，完整输出序列，不要解释。"
     )
 
