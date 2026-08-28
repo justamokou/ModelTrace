@@ -231,7 +231,7 @@ def request_completion(
         return _request_completion(
             base_url, api_key, api_model, prompt, temperature, api_format, system_prompt
         )
-    formats = ("anthropic", "openai") if api_model.lower().startswith("claude") else ("openai", "anthropic")
+    formats = ("openai", "anthropic")
     errors = []
     for candidate in formats:
         try:

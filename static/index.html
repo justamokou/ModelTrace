@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="在浏览器本地运行的语言模型指纹归因工具">
+  <title>ModelTrace</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="product-name"><span class="product-mark">MT</span><strong>ModelTrace</strong></div>
+    <div class="topbar-status"><span id="topbar-bank-count">正在加载指纹库</span></div>
+  </header>
+
+  <main class="main-content static-main">
+    <section class="workspace active">
+      <div class="page-header">
+        <h1>模型测试</h1>
+        <div id="active-bank-badge" class="privacy-badge">本地计算</div>
+      </div>
+
+      <section id="test-manual" class="mode-panel active">
+        <div class="panel-toolbar">
+          <strong>三次挑战</strong>
+          <button id="regenerate" class="button secondary" type="button" disabled>重新生成</button>
+        </div>
+        <div id="challenge-list" class="challenge-list" aria-live="polite"></div>
+        <div class="action-row"><button id="analyze" class="button primary" type="button" disabled>计算归因概率</button></div>
+      </section>
+
+      <div id="test-message" class="message working">正在加载统一指纹库……</div>
+      <section id="result" class="result-panel" hidden aria-live="polite"></section>
+    </section>
+  </main>
+
+  <script type="module" src="./pages-app.js"></script>
+</body>
+</html>
