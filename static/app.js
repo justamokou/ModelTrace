@@ -283,14 +283,48 @@ function renderPresetBatchList() {
   const host = byId("preset-batch-list");
   host.innerHTML = state.presets.length
     ? state.presets.map((preset) => `
-        <label class="preset-batch-item" title="${escapeHtml(preset.base_url)}">
-          <input type="checkbox" value="${escapeHtml(preset.name)}"${checkedNames.has(preset.name) ? " checked" : ""}>
-          <span class="preset-batch-name">${escapeHtml(preset.name)}</span>
-          <span class="preset-batch-meta">${escapeHtml(preset.model || "未填模型名")}</span>
-        </label>
+        <div class="preset-batch-item" draggable="true" data-name="${escapeHtml(preset.name)}" title="${escapeHtml(preset.base_url)}">
+          <span class="preset-batch-grip" aria-hidden="true">⋮⋮</span>
+          <label class="preset-batch-label">
+            <input type="checkbox" value="${escapeHtml(preset.name)}"${checkedNames.has(preset.name) ? " checked" : ""}>
+            <span class="preset-batch-name">${escapeHtml(preset.name)}</span>
+            <span class="preset-batch-meta">${escapeHtml(preset.model || "未填模型名")}</span>
+          </label>
+        </div>
       `).join("")
     : `<span class="preset-batch-empty">暂无预设，请先在上方保存。</span>`;
   updateCheckedCount();
+}
+
+async function applyPresetOrder(names) {
+  try {
+    const response = await fetch("/api/presets/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ names }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setMessage(byId("test-message"), payload.error || "调整预设排序失败。", "error");
+      return;
+    }
+    renderPresets(payload.presets || []);
+  } catch (_) {
+    setMessage(byId("test-message"), "调整预设排序失败。", "error");
+  }
+}
+
+function reorderPreset(name, referenceName, insertBefore) {
+  const current = state.presets.map((preset) => preset.name);
+  const from = current.indexOf(name);
+  if (from < 0) return;
+  const next = current.filter((item) => item !== name);
+  let to = next.indexOf(referenceName);
+  if (to < 0) return;
+  if (!insertBefore) to += 1;
+  if (to === from) return;
+  next.splice(to, 0, name);
+  applyPresetOrder(next);
 }
 
 function toggleAllPresets() {
@@ -453,6 +487,40 @@ async function deleteSelectedPreset() {
   setMessage(byId("test-message"), `已删除预设「${name}」。`, "success");
 }
 
+async function renameSelectedPreset() {
+  const name = byId("preset-select").value;
+  if (!name) {
+    setMessage(byId("test-message"), "请先在“预设”中选择要重命名的项。", "error");
+    return;
+  }
+  const input = window.prompt(`修改预设「${name}」的名称：`, name);
+  if (input === null) return;
+  const newName = input.trim();
+  if (!newName) {
+    setMessage(byId("test-message"), "预设名称不能为空。", "error");
+    return;
+  }
+  if (newName === name) return;
+  const response = await fetch("/api/presets/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, new_name: newName }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    setMessage(byId("test-message"), payload.error || "重命名失败。", "error");
+    return;
+  }
+  const remapped = new Set(batchCheckedNames().map((item) => (item === name ? newName : item)));
+  renderPresets(payload.presets || []);
+  document.querySelectorAll("#preset-batch-list input[type=checkbox]").forEach((checkbox) => {
+    checkbox.checked = remapped.has(checkbox.value);
+  });
+  byId("preset-select").value = newName;
+  updateCheckedCount();
+  setMessage(byId("test-message"), `已将预设「${name}」重命名为「${newName}」。`, "success");
+}
+
 function renderInventory() {
   byId("selected-bank-name").textContent = state.bank.label;
   byId("model-options").innerHTML = state.bank.models.map((model) => `<option value="${escapeHtml(model.id)}"></option>`).join("");
@@ -557,12 +625,57 @@ byId("regenerate").addEventListener("click", loadChallenges);
 byId("analyze").addEventListener("click", analyzeManual);
 byId("api-test-form").addEventListener("submit", testViaApi);
 byId("preset-load").addEventListener("click", loadSelectedPreset);
+byId("preset-rename").addEventListener("click", renameSelectedPreset);
 byId("preset-save").addEventListener("click", saveCurrentPreset);
 byId("preset-delete").addEventListener("click", deleteSelectedPreset);
 byId("preset-select-all").addEventListener("change", toggleAllPresets);
 byId("preset-batch-run").addEventListener("click", startBatchScan);
 byId("preset-batch-list").addEventListener("change", (event) => {
   if (event.target.matches("input[type=checkbox]")) updateCheckedCount();
+});
+let dragPresetName = null;
+let dropInsertBefore = false;
+
+byId("preset-batch-list").addEventListener("dragstart", (event) => {
+  const item = event.target.closest(".preset-batch-item");
+  if (!item) {
+    event.preventDefault();
+    return;
+  }
+  dragPresetName = item.dataset.name;
+  dropInsertBefore = false;
+  item.classList.add("dragging");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", dragPresetName);
+});
+
+byId("preset-batch-list").addEventListener("dragover", (event) => {
+  if (!dragPresetName) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  const host = byId("preset-batch-list");
+  host.querySelectorAll(".drop-before, .drop-after").forEach((node) => node.classList.remove("drop-before", "drop-after"));
+  const item = event.target.closest(".preset-batch-item");
+  if (!item || item.dataset.name === dragPresetName) return;
+  const rect = item.getBoundingClientRect();
+  dropInsertBefore = event.clientY < rect.top + rect.height / 2;
+  item.classList.add(dropInsertBefore ? "drop-before" : "drop-after");
+});
+
+byId("preset-batch-list").addEventListener("drop", (event) => {
+  if (!dragPresetName) return;
+  event.preventDefault();
+  const item = event.target.closest(".preset-batch-item");
+  const name = dragPresetName;
+  dragPresetName = null;
+  if (!item || item.dataset.name === name) return;
+  reorderPreset(name, item.dataset.name, dropInsertBefore);
+});
+
+byId("preset-batch-list").addEventListener("dragend", () => {
+  dragPresetName = null;
+  byId("preset-batch-list").querySelectorAll(".dragging, .drop-before, .drop-after")
+    .forEach((item) => item.classList.remove("dragging", "drop-before", "drop-after"));
 });
 byId("auto-enrollment").addEventListener("submit", enrollAutomatically);
 byId("show-create-bank").addEventListener("click", () => { byId("create-bank-form").hidden = !byId("create-bank-form").hidden; });

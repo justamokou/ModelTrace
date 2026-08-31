@@ -64,7 +64,7 @@ button:disabled { cursor: wait; opacity: .6; }
 .mode-panel { display: none; }
 .mode-panel.active { display: block; }
 
-.preset-panel { margin-bottom: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+.preset-panel, .batch-panel { margin-bottom: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
 .preset-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
 .preset-heading strong { font-size: 13px; }
 .preset-heading span { color: var(--muted); font-size: 11px; }
@@ -86,7 +86,6 @@ button:disabled { cursor: wait; opacity: .6; }
 .preset-row .button { white-space: nowrap; }
 .preset-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
-.preset-batch { margin-top: 13px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .preset-batch-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 9px; }
 .preset-batch-toggle { display: flex; align-items: center; gap: 6px; color: #344054; font-size: 12px; font-weight: 650; cursor: pointer; }
 .preset-batch-toggle input { width: 15px; height: 15px; cursor: pointer; }
@@ -94,9 +93,15 @@ button:disabled { cursor: wait; opacity: .6; }
 .preset-batch-count strong { color: var(--primary-dark); font-size: 13px; }
 .preset-batch-bar .button { margin-left: auto; }
 .preset-batch-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 34px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-soft); }
-.preset-batch-item { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: 12px; cursor: pointer; }
+.preset-batch-item { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: 12px; cursor: grab; user-select: none; }
+.preset-batch-item:active { cursor: grabbing; }
 .preset-batch-item:hover { border-color: #a9c4f5; }
 .preset-batch-item:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.preset-batch-item.dragging { opacity: .45; border-style: dashed; }
+.preset-batch-item.drop-before { box-shadow: inset 0 2px 0 0 var(--primary); }
+.preset-batch-item.drop-after { box-shadow: inset 0 -2px 0 0 var(--primary); }
+.preset-batch-grip { flex: 0 0 auto; color: #98a2b3; font-size: 10px; letter-spacing: -1px; line-height: 1; }
+.preset-batch-label { display: flex; flex: 1; align-items: center; gap: 7px; min-width: 0; cursor: pointer; }
 .preset-batch-item input { width: 14px; height: 14px; cursor: pointer; }
 .preset-batch-name { font-weight: 650; }
 .preset-batch-meta { color: var(--muted); font-size: 10px; }

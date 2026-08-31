@@ -41,19 +41,12 @@
             <div class="preset-row">
               <label class="preset-picker"><span>预设</span><select id="preset-select"><option value="">— 请选择或新建 —</option></select></label>
               <button id="preset-load" class="button secondary" type="button">载入</button>
+              <button id="preset-rename" class="button secondary" type="button">重命名</button>
               <button id="preset-delete" class="button secondary" type="button">删除</button>
               <label class="preset-picker"><span>新预设名称</span><input id="preset-name" placeholder="例如：OAIPro · Claude"></label>
               <button id="preset-save" class="button primary" type="button">保存当前</button>
             </div>
-            <div class="preset-batch">
-              <div class="preset-batch-bar">
-                <label class="preset-batch-toggle"><input id="preset-select-all" type="checkbox"><span>全选</span></label>
-                <span class="preset-batch-count">已勾选 <strong id="preset-checked-count">0</strong> 个</span>
-                <button id="preset-batch-run" class="button primary" type="button">并发检测勾选预设</button>
-              </div>
-              <div id="preset-batch-list" class="preset-batch-list"></div>
-            </div>
-            <p class="preset-note">在下方填写 Base URL / 模型名 / API Key 后点击“保存当前”，即可存入一整套配置；选择单个预设点击“载入”可回填表单，勾选多个预设可并发批量检测。</p>
+            <p class="preset-note">在下方填写 Base URL / 模型名 / API Key 后点击“保存当前”，即可存入一整套配置；选择单个预设点击“载入”可回填表单，点击“重命名”可修改名称。</p>
           </div>
           <form id="api-test-form" class="form-panel">
             <div class="form-grid two">
@@ -68,6 +61,16 @@
             <div class="progress-heading"><strong id="api-progress-status">准备测试</strong><span id="api-progress-count">有效 0/3 · 已尝试 0/6</span></div>
             <div class="progress-track"><i id="api-progress-fill"></i></div>
             <div id="api-progress-steps" class="progress-steps"></div>
+          </section>
+          <section class="batch-panel">
+            <div class="preset-heading"><strong>并发批量检测</strong><span>勾选多个预设，同时发起独立检测</span></div>
+            <div class="preset-batch-bar">
+              <label class="preset-batch-toggle"><input id="preset-select-all" type="checkbox"><span>全选</span></label>
+              <span class="preset-batch-count">已勾选 <strong id="preset-checked-count">0</strong> 个</span>
+              <button id="preset-batch-run" class="button primary" type="button">并发检测勾选预设</button>
+            </div>
+            <div id="preset-batch-list" class="preset-batch-list"></div>
+            <p class="preset-note">勾选多个已保存的预设后点击“并发检测勾选预设”，每个预设独立完成检测与归因，结果在下方并列展示；直接拖拽预设条目即可调整顺序，排序自动保存。</p>
           </section>
           <section id="batch-test-results" class="batch-results" aria-live="polite"></section>
         </section>

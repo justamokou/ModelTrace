@@ -421,5 +421,49 @@ def delete_preset():
     return jsonify({"presets": list(load_presets().values())})
 
 
+@app.post("/api/presets/rename")
+def rename_preset():
+    """重命名预设：保持原有排序位置，校验重名冲突。"""
+    payload = request.get_json() or {}
+    name = str(payload.get("name", "")).strip()
+    new_name = str(payload.get("new_name", "")).strip()
+    if not name or not new_name:
+        return jsonify({"error": "请提供预设名称和新名称"}), 400
+    presets = load_presets()
+    if name not in presets:
+        return jsonify({"error": f"预设「{name}」不存在"}), 404
+    if new_name == name:
+        return jsonify({"presets": list(presets.values())})
+    if new_name in presets:
+        return jsonify({"error": f"预设「{new_name}」已存在，请换一个名称"}), 400
+    renamed: dict[str, dict] = {}
+    for key, preset in presets.items():
+        if key == name:
+            renamed[new_name] = {**preset, "name": new_name}
+        else:
+            renamed[key] = preset
+    save_presets(renamed)
+    return jsonify({"presets": list(load_presets().values())})
+
+
+@app.post("/api/presets/reorder")
+def reorder_presets():
+    """按给定名称顺序重排预设；未提及的名称忽略，原有预设一律保留（追加在末尾）。"""
+    payload = request.get_json() or {}
+    names = payload.get("names")
+    if not isinstance(names, list):
+        return jsonify({"error": "names 必须是预设名称列表"}), 400
+    presets = load_presets()
+    ordered: dict[str, dict] = {}
+    for raw in names:
+        name = str(raw).strip()
+        if name in presets:
+            ordered[name] = presets[name]
+    for name, preset in presets.items():
+        ordered.setdefault(name, preset)
+    save_presets(ordered)
+    return jsonify({"presets": list(load_presets().values())})
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=7860, debug=False)
