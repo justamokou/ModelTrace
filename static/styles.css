@@ -65,6 +65,7 @@ button:disabled { cursor: wait; opacity: .6; }
 .mode-panel.active { display: block; }
 
 .preset-panel, .batch-panel { margin-bottom: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+.batch-panel { margin-top: 14px; }
 .preset-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
 .preset-heading strong { font-size: 13px; }
 .preset-heading span { color: var(--muted); font-size: 11px; }
@@ -156,6 +157,7 @@ textarea:focus, input:focus, .form-grid select:focus { border-color: #84adff; bo
 .compact-form { display: flex; align-items: end; gap: 10px; margin: -8px 0 16px; padding: 12px; }
 .compact-form[hidden] { display: none; }
 .compact-form label { flex: 1; }
+.form-panel > .preset-heading { padding: 14px 17px 0; margin-bottom: 0; }
 .form-heading { display: flex; flex-direction: column; gap: 4px; padding: 15px 17px; border-bottom: 1px solid var(--line); }
 .form-heading span { color: var(--muted); font-size: 11px; }
 .form-grid { display: grid; gap: 14px; padding: 17px; }
