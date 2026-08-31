@@ -36,6 +36,25 @@
         </section>
 
         <section id="test-api" class="mode-panel">
+          <div class="preset-panel">
+            <div class="preset-heading"><strong>本地预设（URL / Key）</strong><span>保存在本机，下次启动快速调取</span></div>
+            <div class="preset-row">
+              <label class="preset-picker"><span>预设</span><select id="preset-select"><option value="">— 请选择或新建 —</option></select></label>
+              <button id="preset-load" class="button secondary" type="button">载入</button>
+              <button id="preset-delete" class="button secondary" type="button">删除</button>
+              <label class="preset-picker"><span>新预设名称</span><input id="preset-name" placeholder="例如：OAIPro · Claude"></label>
+              <button id="preset-save" class="button primary" type="button">保存当前</button>
+            </div>
+            <div class="preset-batch">
+              <div class="preset-batch-bar">
+                <label class="preset-batch-toggle"><input id="preset-select-all" type="checkbox"><span>全选</span></label>
+                <span class="preset-batch-count">已勾选 <strong id="preset-checked-count">0</strong> 个</span>
+                <button id="preset-batch-run" class="button primary" type="button">并发检测勾选预设</button>
+              </div>
+              <div id="preset-batch-list" class="preset-batch-list"></div>
+            </div>
+            <p class="preset-note">在下方填写 Base URL / 模型名 / API Key 后点击“保存当前”，即可存入一整套配置；选择单个预设点击“载入”可回填表单，勾选多个预设可并发批量检测。</p>
+          </div>
           <form id="api-test-form" class="form-panel">
             <div class="form-grid two">
               <label><span>Base URL</span><input id="test-api-base" required placeholder="https://example.com/v1"></label>
@@ -50,6 +69,7 @@
             <div class="progress-track"><i id="api-progress-fill"></i></div>
             <div id="api-progress-steps" class="progress-steps"></div>
           </section>
+          <section id="batch-test-results" class="batch-results" aria-live="polite"></section>
         </section>
 
         <div id="test-message" class="message" hidden></div>

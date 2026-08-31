@@ -64,6 +64,63 @@ button:disabled { cursor: wait; opacity: .6; }
 .mode-panel { display: none; }
 .mode-panel.active { display: block; }
 
+.preset-panel { margin-bottom: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+.preset-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+.preset-heading strong { font-size: 13px; }
+.preset-heading span { color: var(--muted); font-size: 11px; }
+.preset-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.preset-picker { display: flex; flex-direction: column; gap: 6px; color: #344054; font-size: 11px; font-weight: 650; }
+.preset-picker select, .preset-picker input {
+  min-width: 220px;
+  height: 38px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+  background: white;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  outline: none;
+}
+.preset-picker select { padding: 0 30px 0 10px; font-weight: 550; }
+.preset-picker select:focus, .preset-picker input:focus { border-color: #84adff; box-shadow: 0 0 0 3px rgba(37,99,235,.10); }
+.preset-row .button { white-space: nowrap; }
+.preset-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+.preset-batch { margin-top: 13px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.preset-batch-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 9px; }
+.preset-batch-toggle { display: flex; align-items: center; gap: 6px; color: #344054; font-size: 12px; font-weight: 650; cursor: pointer; }
+.preset-batch-toggle input { width: 15px; height: 15px; cursor: pointer; }
+.preset-batch-count { color: var(--muted); font-size: 11px; }
+.preset-batch-count strong { color: var(--primary-dark); font-size: 13px; }
+.preset-batch-bar .button { margin-left: auto; }
+.preset-batch-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 34px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-soft); }
+.preset-batch-item { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: 12px; cursor: pointer; }
+.preset-batch-item:hover { border-color: #a9c4f5; }
+.preset-batch-item:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.preset-batch-item input { width: 14px; height: 14px; cursor: pointer; }
+.preset-batch-name { font-weight: 650; }
+.preset-batch-meta { color: var(--muted); font-size: 10px; }
+.preset-batch-empty { align-self: center; color: var(--muted); font-size: 12px; }
+
+.batch-results { display: grid; gap: 14px; margin-top: 14px; }
+.batch-result-card { padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+.batch-result-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 11px; }
+.batch-result-head strong { font-size: 14px; }
+.batch-result-head span { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-progress { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.batch-result-card .message { margin-top: 0; }
+.batch-result-host { margin-top: 4px; }
+.batch-result-host .result-summary { border-top: 1px solid var(--line); }
+@media (max-width: 640px) {
+  .preset-heading { flex-direction: column; gap: 4px; }
+  .preset-row { flex-direction: column; align-items: stretch; }
+  .preset-row .button { width: 100%; }
+  .preset-picker select, .preset-picker input { width: 100%; min-width: 0; }
+  .preset-batch-bar { flex-wrap: wrap; }
+  .preset-batch-bar .button { width: 100%; margin-left: 0; }
+  .batch-result-head { flex-direction: column; gap: 4px; }
+}
+
 .panel-toolbar, .action-row, .form-footer { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .panel-toolbar { padding: 13px 15px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px 9px 0 0; }
 .panel-toolbar > div { display: flex; align-items: baseline; gap: 10px; }

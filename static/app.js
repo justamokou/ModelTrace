@@ -3,7 +3,9 @@ const state = {
   bankId: window.DEFAULT_BANK_ID,
   bank: window.BANK_SUMMARIES[window.DEFAULT_BANK_ID],
   unified: window.UNIFIED_SUMMARY,
+  presets: [],
 };
+let batchRunning = false;
 
 const byId = (id) => document.getElementById(id);
 
@@ -26,6 +28,110 @@ function setMessage(element, text, type = "error") {
   element.textContent = text;
   element.className = `message ${type}`;
   element.hidden = !text;
+}
+
+async function runPresetScan(configuration, view) {
+  /* 单套预设检测核心：串行探测最多 6 次以取得 3 份有效回答，再归因。
+     进度与结果都通过 view 渲染，供单个表单与批量并发共用。 */
+  view.setMessage && view.setMessage("", "working");
+  const challengeResponse = await fetch("/api/challenges");
+  const firstBatch = (await challengeResponse.json()).challenges;
+  const retryResponse = await fetch("/api/challenges");
+  const challenges = firstBatch.concat((await retryResponse.json()).challenges);
+  const states = challenges.map(() => "pending");
+  const outputs = [];
+  const errors = [];
+  const target = 3;
+  view.showProgress && view.showProgress();
+  view.renderProgress && view.renderProgress(states, "已生成独立挑战，准备调用模型");
+
+  for (let index = 0; index < challenges.length && outputs.length < target; index += 1) {
+    states[index] = "working";
+    view.renderProgress && view.renderProgress(states, `正在进行第 ${index + 1} 次尝试，等待模型完整输出……`);
+    try {
+      const response = await fetch("/api/test/probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...configuration,
+          prompt: challenges[index].prompt,
+          expected_count: challenges[index].expected_count,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "接口请求失败");
+      if (payload.accepted) {
+        outputs.push({ text: payload.text, expected_count: challenges[index].expected_count });
+        states[index] = "done";
+      } else {
+        errors.push(`尝试 ${index + 1}: 有效数字 ${payload.parsed_numbers}/${payload.minimum_numbers}`);
+        states[index] = "invalid";
+      }
+    } catch (error) {
+      errors.push(`尝试 ${index + 1}: ${error.message}`);
+      states[index] = "error";
+    }
+    view.renderProgress && view.renderProgress(states, `当前已有 ${outputs.length}/${target} 份有效回答`);
+  }
+
+  if (outputs.length === target) {
+    states.forEach((state, index) => { if (state === "pending") states[index] = "skipped"; });
+  }
+
+  if (!outputs.length) {
+    view.renderProgress && view.renderProgress(states, "六次尝试后仍没有可用回答");
+    view.setMessage && view.setMessage(`没有获得可分析输出。${errors[0] || ""}`, "error");
+    return;
+  }
+
+  view.renderProgress && view.renderProgress(states, "模型回答已收齐，正在计算归因概率……");
+  const analysisResponse = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ outputs }),
+  });
+  const result = await analysisResponse.json();
+  if (analysisResponse.ok) {
+    const attempted = states.filter((state) => ["done", "invalid", "error"].includes(state)).length;
+    result.api_test = { requested: target, attempted, max_attempts: challenges.length, received: outputs.length, errors };
+    view.renderProgress && view.renderProgress(states, `测试完成：${outputs.length}/${target} 份有效回答进入归因`);
+    view.renderResult && view.renderResult(result);
+  } else {
+    view.setMessage && view.setMessage(result.error || "API 自动测试失败。", "error");
+  }
+}
+
+async function testViaApi(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true;
+  byId("result").hidden = true;
+  setMessage(byId("test-message"), "");
+  const configuration = {
+    base_url: byId("test-api-base").value,
+    api_key: byId("test-api-key").value,
+    api_model: byId("test-api-model").value,
+    temperature: optionalNumber("test-temperature"),
+  };
+  const view = {
+    showProgress: () => { byId("api-test-progress").hidden = false; },
+    renderProgress: renderApiProgress,
+    renderResult,
+    setMessage: (text, type) => setMessage(byId("test-message"), text, type),
+  };
+  await runPresetScan(configuration, view);
+  button.disabled = false;
+}
+
+function configForPreset(preset) {
+  return {
+    base_url: preset.base_url || "",
+    api_key: preset.api_key || "",
+    api_model: preset.model || "",
+    temperature: preset.temperature === "" || preset.temperature === undefined || preset.temperature === null
+      ? null
+      : Number(preset.temperature),
+  };
 }
 
 function activateWorkspace(name) {
@@ -73,7 +179,7 @@ function renderChallenges() {
   });
 }
 
-function renderResult(payload) {
+function buildResultHtml(payload) {
   const diagnostics = payload.diagnostics.map((item, index) => `
     <span class="diagnostic ${item.accepted ? "accepted" : "rejected"}">挑战 ${index + 1}: ${item.parsed_numbers} 个数字 · ${item.accepted ? "计入" : "忽略"}</span>
   `).join("");
@@ -87,7 +193,7 @@ function renderResult(payload) {
   const apiNote = payload.api_test
     ? `<span>API 获得 ${payload.api_test.received}/${payload.api_test.requested} 份有效回答，实际尝试 ${payload.api_test.attempted}/${payload.api_test.max_attempts}${payload.api_test.errors.length ? `，${payload.api_test.errors.length} 次未采用` : ""}</span>`
     : "";
-  byId("result").innerHTML = `
+  return `
     <div class="result-summary">
       <div><span>最可能模型</span><strong>${escapeHtml(payload.prediction_name)}</strong></div>
       <div><span>统一库概率</span><strong>${percent(payload.probability)}</strong></div>
@@ -98,6 +204,10 @@ function renderResult(payload) {
     <div class="table-wrap"><table><thead><tr><th>排序</th><th>候选模型</th><th>家族</th><th>归因概率</th><th>分布相似度</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${apiNote ? `<div class="result-note">${apiNote}</div>` : ""}
   `;
+}
+
+function renderResult(payload) {
+  byId("result").innerHTML = buildResultHtml(payload);
   byId("result").hidden = false;
   byId("result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -136,91 +246,211 @@ function renderApiProgress(states, status) {
   }).join("");
 }
 
-async function testViaApi(event) {
-  event.preventDefault();
-  const button = event.currentTarget.querySelector("button[type=submit]");
-  button.disabled = true;
-  byId("result").hidden = true;
-  setMessage(byId("test-message"), "");
-
-  const challengeResponse = await fetch("/api/challenges");
-  const firstBatch = (await challengeResponse.json()).challenges;
-  const retryResponse = await fetch("/api/challenges");
-  const challenges = firstBatch.concat((await retryResponse.json()).challenges);
-  const states = challenges.map(() => "pending");
-  const outputs = [];
-  const errors = [];
-  const target = 3;
-  const configuration = {
-    base_url: byId("test-api-base").value,
-    api_key: byId("test-api-key").value,
-    api_model: byId("test-api-model").value,
-    temperature: optionalNumber("test-temperature"),
-  };
-  renderApiProgress(states, "已生成独立挑战，准备调用模型");
-
-  for (let index = 0; index < challenges.length && outputs.length < target; index += 1) {
-    states[index] = "working";
-    renderApiProgress(states, `正在进行第 ${index + 1} 次尝试，等待模型完整输出……`);
-    try {
-      const response = await fetch("/api/test/probe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...configuration,
-          prompt: challenges[index].prompt,
-          expected_count: challenges[index].expected_count,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "接口请求失败");
-      if (payload.accepted) {
-        outputs.push({ text: payload.text, expected_count: challenges[index].expected_count });
-        states[index] = "done";
-      } else {
-        errors.push(`尝试 ${index + 1}: 有效数字 ${payload.parsed_numbers}/${payload.minimum_numbers}`);
-        states[index] = "invalid";
-      }
-    } catch (error) {
-      errors.push(`尝试 ${index + 1}: ${error.message}`);
-      states[index] = "error";
-    }
-    renderApiProgress(states, `当前已有 ${outputs.length}/${target} 份有效回答`);
-  }
-
-  if (outputs.length === target) {
-    states.forEach((state, index) => { if (state === "pending") states[index] = "skipped"; });
-  }
-
-  if (!outputs.length) {
-    renderApiProgress(states, "六次尝试后仍没有可用回答");
-    setMessage(byId("test-message"), `没有获得可分析输出。${errors[0] || ""}`, "error");
-    button.disabled = false;
-    return;
-  }
-
-  renderApiProgress(states, "模型回答已收齐，正在计算归因概率……");
-  const analysisResponse = await fetch("/api/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ outputs }),
-  });
-  const result = await analysisResponse.json();
-  if (analysisResponse.ok) {
-    const attempted = states.filter((state) => ["done", "invalid", "error"].includes(state)).length;
-    result.api_test = { requested: target, attempted, max_attempts: challenges.length, received: outputs.length, errors };
-    renderApiProgress(states, `测试完成：${outputs.length}/${target} 份有效回答进入归因`);
-    renderResult(result);
-  } else {
-    setMessage(byId("test-message"), result.error || "API 自动测试失败。", "error");
-  }
-  button.disabled = false;
-}
-
 function updateUnifiedSummary(summary) {
   state.unified = summary;
   byId("topbar-bank-count").textContent = `${summary.model_count} 个候选模型`;
   byId("active-bank-badge").textContent = `${summary.model_count} 个候选模型`;
+}
+
+function renderPresets(presets) {
+  state.presets = presets;
+  const selected = byId("preset-select").value;
+  byId("preset-select").innerHTML = ['<option value="">— 请选择或新建 —</option>']
+    .concat(presets.map((preset) => `<option value="${escapeHtml(preset.name)}">${escapeHtml(preset.name)}</option>`))
+    .join("");
+  if (presets.some((preset) => preset.name === selected)) {
+    byId("preset-select").value = selected;
+  }
+  renderPresetBatchList();
+}
+
+function batchCheckedNames() {
+  return Array.from(document.querySelectorAll("#preset-batch-list input[type=checkbox]:checked"))
+    .map((checkbox) => checkbox.value);
+}
+
+function updateCheckedCount() {
+  const checkboxes = Array.from(document.querySelectorAll("#preset-batch-list input[type=checkbox]"));
+  const checked = checkboxes.filter((checkbox) => checkbox.checked).length;
+  byId("preset-checked-count").textContent = String(checked);
+  byId("preset-select-all").checked = checkboxes.length > 0 && checked === checkboxes.length;
+  byId("preset-select-all").disabled = checkboxes.length === 0;
+  byId("preset-batch-run").disabled = checkboxes.length === 0 || batchRunning;
+}
+
+function renderPresetBatchList() {
+  const checkedNames = new Set(batchCheckedNames());
+  const host = byId("preset-batch-list");
+  host.innerHTML = state.presets.length
+    ? state.presets.map((preset) => `
+        <label class="preset-batch-item" title="${escapeHtml(preset.base_url)}">
+          <input type="checkbox" value="${escapeHtml(preset.name)}"${checkedNames.has(preset.name) ? " checked" : ""}>
+          <span class="preset-batch-name">${escapeHtml(preset.name)}</span>
+          <span class="preset-batch-meta">${escapeHtml(preset.model || "未填模型名")}</span>
+        </label>
+      `).join("")
+    : `<span class="preset-batch-empty">暂无预设，请先在上方保存。</span>`;
+  updateCheckedCount();
+}
+
+function toggleAllPresets() {
+  const selectAll = byId("preset-select-all").checked;
+  document.querySelectorAll("#preset-batch-list input[type=checkbox]").forEach((checkbox) => { checkbox.checked = selectAll; });
+  updateCheckedCount();
+}
+
+function makeBatchView(preset, host) {
+  const card = document.createElement("article");
+  card.className = "batch-result-card";
+  card.innerHTML = `
+    <div class="batch-result-head">
+      <strong>${escapeHtml(preset.name)}</strong>
+      <span>${escapeHtml(preset.base_url)} · ${escapeHtml(preset.model || "未填模型名")}</span>
+    </div>
+    <section class="progress-panel batch-progress" hidden>
+      <div class="progress-heading"><strong class="batch-status">准备…</strong><span class="batch-count">有效 0/3 · 已尝试 0/6</span></div>
+      <div class="progress-track"><i class="batch-fill" style="width:0%"></i></div>
+      <div class="progress-steps batch-steps"></div>
+    </section>
+    <div class="batch-message message" hidden></div>
+    <section class="batch-result-host" hidden></section>
+  `;
+  host.appendChild(card);
+  const query = (selector) => card.querySelector(selector);
+  const statusEl = query(".batch-status");
+  const countEl = query(".batch-count");
+  const fillEl = query(".batch-fill");
+  const stepsEl = query(".batch-steps");
+  const progressEl = query(".batch-progress");
+  const resultEl = query(".batch-result-host");
+  return {
+    preset,
+    showProgress: () => { progressEl.hidden = false; },
+    renderProgress: (states, status) => {
+      const valid = states.filter((item) => item === "done").length;
+      const attempted = states.filter((item) => ["done", "invalid", "error"].includes(item)).length;
+      statusEl.textContent = status;
+      countEl.textContent = `有效 ${valid}/3 · 已尝试 ${attempted}/${states.length}`;
+      fillEl.style.width = `${(valid / 3) * 100}%`;
+      stepsEl.innerHTML = states.map((item, index) => {
+        const labels = { pending: "等待", working: "请求中", done: "有效", invalid: "数字不足", error: "接口失败", skipped: "无需调用" };
+        return `<span class="progress-step ${item}"><b>${index + 1}</b>挑战 ${index + 1} · ${labels[item]}</span>`;
+      }).join("");
+    },
+    renderResult: (result) => {
+      resultEl.innerHTML = buildResultHtml(result);
+      resultEl.hidden = false;
+    },
+    setMessage: (text, type) => setMessage(query(".batch-message"), text, type),
+  };
+}
+
+async function startBatchScan() {
+  if (batchRunning) return;
+  const names = batchCheckedNames();
+  if (!names.length) {
+    setMessage(byId("test-message"), "请先勾选至少一个预设，再并发检测。", "error");
+    return;
+  }
+  const presets = names.map((name) => state.presets.find((preset) => preset.name === name)).filter(Boolean);
+  const runButton = byId("preset-batch-run");
+  const resultsHost = byId("batch-test-results");
+  batchRunning = true;
+  runButton.disabled = true;
+  runButton.textContent = "检测中……";
+  resultsHost.innerHTML = "";
+  setMessage(byId("test-message"), `已并发启动 ${presets.length} 个预设的检测。`, "working");
+
+  const views = presets.map((preset) => makeBatchView(preset, resultsHost));
+  const outcomes = await Promise.all(
+    views.map(async (view) => {
+      try {
+        await runPresetScan(configForPreset(view.preset), view);
+        return { name: view.preset.name, ok: true };
+      } catch (error) {
+        view.setMessage(error.message || "检测失败。", "error");
+        return { name: view.preset.name, ok: false };
+      }
+    })
+  );
+  batchRunning = false;
+  updateCheckedCount();
+  runButton.textContent = "并发检测勾选预设";
+  const failed = outcomes.filter((item) => !item.ok).map((item) => item.name);
+  setMessage(
+    byId("test-message"),
+    failed.length ? `检测完成，${failed.length} 个预设执行失败：${failed.join("、")}` : `检测完成：${outcomes.length} 个预设全部执行完毕。`,
+    failed.length ? "error" : "success"
+  );
+  resultsHost.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function reloadPresets() {
+  try {
+    const response = await fetch("/api/presets");
+    const payload = await response.json();
+    renderPresets(payload.presets || []);
+  } catch (_) {
+    renderPresets([]);
+  }
+}
+
+async function loadSelectedPreset() {
+  const name = byId("preset-select").value;
+  const preset = state.presets.find((item) => item.name === name);
+  if (!preset) return;
+  byId("test-api-base").value = preset.base_url || "";
+  byId("test-api-model").value = preset.model || "";
+  byId("test-api-key").value = preset.api_key || "";
+  byId("test-temperature").value = preset.temperature === "" ? "" : preset.temperature;
+  byId("preset-name").value = "";
+  setMessage(byId("test-message"), `已载入预设「${preset.name}」`, "success");
+}
+
+async function saveCurrentPreset() {
+  const name = byId("preset-name").value.trim();
+  if (!name) {
+    setMessage(byId("test-message"), "请先填写“新预设名称”再保存。", "error");
+    byId("preset-name").focus();
+    return;
+  }
+  const response = await fetch("/api/presets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      base_url: byId("test-api-base").value,
+      api_key: byId("test-api-key").value,
+      model: byId("test-api-model").value,
+      temperature: optionalNumber("test-temperature"),
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    setMessage(byId("test-message"), payload.error || "保存预设失败。", "error");
+    return;
+  }
+  renderPresets(payload.presets || []);
+  byId("preset-select").value = name;
+  setMessage(byId("test-message"), `已保存预设「${name}」，下次启动可直接载入。`, "success");
+}
+
+async function deleteSelectedPreset() {
+  const name = byId("preset-select").value;
+  if (!name) return;
+  if (!window.confirm(`确定删除预设「${name}」吗？`)) return;
+  const response = await fetch("/api/presets", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    setMessage(byId("test-message"), payload.error || "删除预设失败。", "error");
+    return;
+  }
+  renderPresets(payload.presets || []);
+  setMessage(byId("test-message"), `已删除预设「${name}」。`, "success");
 }
 
 function renderInventory() {
@@ -326,9 +556,18 @@ byId("bank-select").addEventListener("change", (event) => selectBank(event.targe
 byId("regenerate").addEventListener("click", loadChallenges);
 byId("analyze").addEventListener("click", analyzeManual);
 byId("api-test-form").addEventListener("submit", testViaApi);
+byId("preset-load").addEventListener("click", loadSelectedPreset);
+byId("preset-save").addEventListener("click", saveCurrentPreset);
+byId("preset-delete").addEventListener("click", deleteSelectedPreset);
+byId("preset-select-all").addEventListener("change", toggleAllPresets);
+byId("preset-batch-run").addEventListener("click", startBatchScan);
+byId("preset-batch-list").addEventListener("change", (event) => {
+  if (event.target.matches("input[type=checkbox]")) updateCheckedCount();
+});
 byId("auto-enrollment").addEventListener("submit", enrollAutomatically);
 byId("show-create-bank").addEventListener("click", () => { byId("create-bank-form").hidden = !byId("create-bank-form").hidden; });
 byId("create-bank-form").addEventListener("submit", createBank);
 
 renderInventory();
 loadChallenges();
+reloadPresets();

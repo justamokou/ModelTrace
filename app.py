@@ -8,6 +8,8 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
+from cryptography.fernet import Fernet
+
 from enrollment import bank_summary, enroll_automatic, request_completion, test_automatic
 from fingerprint import analyze_global_outputs, generate_challenges, load_bank, parse_numbers
 from bank_builder import build_bank, read_rows
@@ -17,7 +19,92 @@ app = Flask(__name__)
 PROJECT = Path(__file__).resolve().parent
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
 UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
+PRESETS_FILE = PROJECT / "data" / "presets.json"
+PRESET_KEY_FILE = Path.home() / ".modelrace_key"
+_ENCRYPTED_PREFIX = "enc1:"
 DEFAULT_BANK_ID = "claude"
+
+
+def _load_fernet() -> Fernet | None:
+    """读取或创建设置加密密钥（位于仓库外的用户主目录）。
+
+    密钥文件与项目仓库分离，因此 commit/push 不会带上它；即使预设文件被误
+    提交，其中的 API Key 也只是密文。若 cryptography 缺失或密钥文件不可用，
+    返回 None，预设功能退化为不加密明文（并仍受 .gitignore 保护）。
+    """
+    try:
+        if PRESET_KEY_FILE.exists():
+            key = PRESET_KEY_FILE.read_bytes().strip()
+            if key:
+                return Fernet(key)
+        key = Fernet.generate_key()
+        PRESET_KEY_FILE.write_bytes(key + b"\n")
+        return Fernet(key)
+    except Exception:
+        return None
+
+
+def _encrypt_value(fernet: Fernet | None, plaintext: str) -> str:
+    if not plaintext or fernet is None:
+        return plaintext
+    return _ENCRYPTED_PREFIX + fernet.encrypt(plaintext.encode("utf-8")).decode("ascii")
+
+
+def _decrypt_value(fernet: Fernet | None, stored: str) -> str:
+    if not stored or not stored.startswith(_ENCRYPTED_PREFIX):
+        return stored  # 未加密（旧数据或无法加密环境），原样返回
+    try:
+        if fernet is None:
+            return ""
+        token = stored[len(_ENCRYPTED_PREFIX):]
+        return fernet.decrypt(token.encode("ascii")).decode("utf-8")
+    except Exception:
+        return ""  # 密钥不匹配等：不暴露密文，视为空
+
+
+def load_presets() -> dict[str, dict]:
+    """读取本地保存的 URL/Key 预设（读取时解密 API Key）。返回 {name: preset}。"""
+    if not PRESETS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    presets = data.get("presets") if isinstance(data, dict) else data
+    if not isinstance(presets, list):
+        return {}
+    fernet = _load_fernet()
+    return {
+        str(item["name"]).strip(): {
+            "name": str(item["name"]).strip(),
+            "base_url": str(item.get("base_url", "")),
+            "api_key": _decrypt_value(fernet, str(item.get("api_key", ""))),
+            "model": str(item.get("model", "")),
+            "temperature": str(item.get("temperature", "")),
+        }
+        for item in presets
+        if isinstance(item, dict) and str(item.get("name", "")).strip()
+    }
+
+
+def save_presets(presets: dict[str, dict]) -> None:
+    """把 {name: preset} 写入本地文件（API Key 加密后落盘）。"""
+    PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fernet = _load_fernet()
+    data = {
+        "presets": [
+            {
+                **presets[name],
+                "api_key": _encrypt_value(fernet, presets[name].get("api_key", "")),
+            }
+            for name in preserved_order(presets)
+        ]
+    }
+    PRESETS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def preserved_order(presets: dict[str, dict]) -> list[str]:
+    return list(presets.keys())
 
 
 def builtin_configs() -> dict[str, dict]:
@@ -295,6 +382,43 @@ def automatic_enrollment():
         return jsonify(result)
     except (RuntimeError, ValueError) as error:
         return jsonify({"error": str(error)}), 400
+
+
+@app.get("/api/presets")
+def get_presets():
+    return jsonify({"presets": list(load_presets().values())})
+
+
+@app.post("/api/presets")
+def save_preset():
+    payload = request.get_json() or {}
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "请输入预设名称"}), 400
+    base_url = str(payload.get("base_url", "")).strip()
+    if not base_url:
+        return jsonify({"error": "请输入 Base URL"}), 400
+    preset = {
+        "name": name,
+        "base_url": base_url,
+        "api_key": str(payload.get("api_key", "")),
+        "model": str(payload.get("model", "")).strip(),
+        "temperature": "" if payload.get("temperature") in (None, "") else str(payload["temperature"]),
+    }
+    presets = load_presets()
+    presets[name] = preset
+    save_presets(presets)
+    return jsonify({"presets": list(load_presets().values())})
+
+
+@app.delete("/api/presets")
+def delete_preset():
+    name = str((request.get_json() or {}).get("name", "")).strip()
+    presets = load_presets()
+    if name in presets:
+        del presets[name]
+        save_presets(presets)
+    return jsonify({"presets": list(load_presets().values())})
 
 
 if __name__ == "__main__":

@@ -20,6 +20,16 @@ python start.py
 API Key 只用于当前页面发起请求，不写入磁盘。
 新执行的自动采集会在对应的 `*_reference.jsonl` 中保存实际 user prompt、base prompt、system prompt 和 user prefix；拟合后的 `*_bank.json` 与 `unified_bank.json` 只保存统计指纹和校准参数。
 
+### 本地 URL / Key 预设
+
+在「模型测试 → API 自动测试」顶部可以保存多套固定的 Base URL、模型名、API Key（以及可选温度）为命名预设，方便下次启动快速调取测试：
+
+- **保存**：填写下方测试表单后，在“新预设名称”填入名称，点击「保存当前」，数据加密后写入本机 `data/presets.json`。
+- **载入**：下拉选择预设名，点击「载入」，自动回填测试表单。
+- **删除**：选中预设后点击「删除」。
+
+安全说明：API Key 会用 `cryptography`（Fernet）加密后落盘，加密密钥保存在仓库之外的用户主目录 `~/.modelrace_key`；`data/presets.json` 与密钥文件均已加入 `.gitignore`，不会被 `git commit/push` 提交到远程仓库。请务必备份 `~/.modelrace_key`，更换机器或丢失密钥后将无法解密已保存的 Key（此时该预设的 Key 会返回为空）。
+
 ## 指纹方法
 
 所有模型使用同一个全局特征空间、同一套特征与权重：
