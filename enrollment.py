@@ -169,6 +169,8 @@ def _request_completion(
             "Authorization": f"Bearer {api_key}",
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "ModelTrace/1.0",
         }
     else:
         body_data = {
@@ -181,6 +183,8 @@ def _request_completion(
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "ModelTrace/1.0",
         }
     if temperature is not None:
         body_data["temperature"] = temperature
