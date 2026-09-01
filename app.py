@@ -4,6 +4,7 @@ import json
 import math
 import re
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -20,9 +21,11 @@ PROJECT = Path(__file__).resolve().parent
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
 UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
 PRESETS_FILE = PROJECT / "data" / "presets.json"
+HISTORY_FILE = PROJECT / "data" / "detection_history.json"
 PRESET_KEY_FILE = Path.home() / ".modelrace_key"
 _ENCRYPTED_PREFIX = "enc1:"
 DEFAULT_BANK_ID = "claude"
+HISTORY_PASS_THRESHOLD = 0.9
 
 
 def _load_fernet() -> Fernet | None:
@@ -105,6 +108,170 @@ def save_presets(presets: dict[str, dict]) -> None:
 
 def preserved_order(presets: dict[str, dict]) -> list[str]:
     return list(presets.keys())
+
+
+def _history_text(value: object, maximum: int = 180) -> str:
+    """规范化会展示或落盘的历史文本，避免保存原始回答等大块内容。"""
+    return " ".join(str(value or "").split())[:maximum]
+
+
+def _history_probability(value: object, field: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"历史记录中的 {field} 无效") from error
+    if not math.isfinite(number) or not 0 <= number <= 1:
+        raise ValueError(f"历史记录中的 {field} 应介于 0 和 1 之间")
+    return number
+
+
+def _history_output_count(value: object) -> int:
+    try:
+        return max(0, min(3, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def load_history_records() -> list[dict]:
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        payload = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    records = payload.get("records") if isinstance(payload, dict) else payload
+    return [item for item in records if isinstance(item, dict)] if isinstance(records, list) else []
+
+
+def save_history_records(records: list[dict]) -> None:
+    """原子写入本地历史，避免程序中断留下半份 JSON 文件。"""
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = HISTORY_FILE.with_suffix(".json.tmp")
+    data = {"version": 1, "records": records}
+    temporary_file.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary_file.replace(HISTORY_FILE)
+
+
+def _history_model_key(value: object) -> str:
+    """比较模型名时忽略大小写、分隔符和常见供应商前缀。"""
+    text = _history_text(value, 180).casefold()
+    text = text.rsplit("/", 1)[-1]
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def history_status(record: dict) -> dict:
+    result = record.get("result") if isinstance(record.get("result"), dict) else {}
+    try:
+        probability = float(result.get("probability", 0))
+    except (TypeError, ValueError):
+        probability = 0
+    probability = probability if math.isfinite(probability) else 0
+    prediction_name = _history_text(result.get("prediction_name"), 180)
+    expected_model = _history_text(record.get("api_model"), 180)
+    probability_passed = probability >= HISTORY_PASS_THRESHOLD
+    prediction_key = _history_model_key(prediction_name)
+    expected_key = _history_model_key(expected_model)
+    model_matches = not expected_model or (
+        bool(prediction_name)
+        and bool(prediction_key)
+        and prediction_key == expected_key
+    )
+    passed = probability_passed and model_matches
+
+    if expected_model and not model_matches:
+        reason = f"目标模型为 {expected_model}，实际预测为 {prediction_name or '未知模型'}"
+    elif probability_passed:
+        reason = f"归因概率 {probability * 100:.1f}% 已达到 90% 阈值"
+    else:
+        reason = f"归因概率 {probability * 100:.1f}% 未达到 90% 阈值"
+    return {
+        "status": "passed" if passed else "failed",
+        "status_label": "检测通过" if passed else "检测未通过",
+        "status_reason": reason,
+        "status_threshold": HISTORY_PASS_THRESHOLD,
+    }
+
+
+def history_summary(record: dict) -> dict:
+    result = record.get("result", {})
+    return {
+        "id": record.get("id", ""),
+        "label": record.get("label", "未命名检测"),
+        "test_type": record.get("test_type", "manual"),
+        "source_name": record.get("source_name", ""),
+        "api_model": record.get("api_model", ""),
+        "saved_at": record.get("saved_at", ""),
+        "prediction_name": result.get("prediction_name", ""),
+        "probability": result.get("probability", 0),
+        "family_prediction_name": result.get("family_prediction_name", ""),
+        "family_probability": result.get("family_probability", 0),
+        "used_outputs": result.get("used_outputs", 0),
+        **history_status(record),
+    }
+
+
+def make_history_record(payload: dict) -> dict:
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("没有可保存的检测结果")
+    test_type = _history_text(payload.get("test_type"), 20)
+    if test_type not in {"manual", "api", "batch"}:
+        raise ValueError("未知检测类型")
+    raw_candidates = result.get("results")
+    if not isinstance(raw_candidates, list) or not raw_candidates:
+        raise ValueError("检测结果缺少候选模型")
+
+    candidates = []
+    for item in raw_candidates[:10]:
+        if not isinstance(item, dict):
+            continue
+        display_name = _history_text(item.get("display_name"), 180)
+        if not display_name:
+            continue
+        candidates.append(
+            {
+                "display_name": display_name,
+                "family_name": _history_text(item.get("family_name"), 100),
+                "probability": _history_probability(item.get("probability"), "候选模型概率"),
+                "profile_similarity": _history_probability(item.get("profile_similarity"), "分布相似度"),
+            }
+        )
+    if not candidates:
+        raise ValueError("检测结果不包含可保存的候选模型")
+
+    diagnostics = []
+    for item in result.get("diagnostics", [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            parsed_numbers = max(0, int(item.get("parsed_numbers", 0)))
+        except (TypeError, ValueError):
+            parsed_numbers = 0
+        diagnostics.append({"parsed_numbers": parsed_numbers, "accepted": bool(item.get("accepted"))})
+
+    saved_at = datetime.now(timezone.utc).astimezone()
+    method_names = {"manual": "手动检测", "api": "API 单次检测", "batch": "批量检测"}
+    source_name = _history_text(payload.get("source_name"), 180)
+    label_source = source_name or _history_text(payload.get("api_model"), 180) or method_names[test_type]
+    label = f"{saved_at:%Y-%m-%d %H:%M:%S} · {label_source}"
+    prediction_name = _history_text(result.get("prediction_name"), 180) or candidates[0]["display_name"]
+    return {
+        "id": secrets.token_urlsafe(9),
+        "label": label,
+        "test_type": test_type,
+        "source_name": source_name,
+        "api_model": _history_text(payload.get("api_model"), 180),
+        "saved_at": saved_at.isoformat(),
+        "result": {
+            "prediction_name": prediction_name,
+            "probability": _history_probability(result.get("probability"), "归因概率"),
+            "family_prediction_name": _history_text(result.get("family_prediction_name"), 100),
+            "family_probability": _history_probability(result.get("family_probability"), "家族概率"),
+            "used_outputs": _history_output_count(result.get("used_outputs")),
+            "diagnostics": diagnostics,
+            "results": candidates,
+        },
+    }
 
 
 def builtin_configs() -> dict[str, dict]:
@@ -463,6 +630,60 @@ def reorder_presets():
         ordered.setdefault(name, preset)
     save_presets(ordered)
     return jsonify({"presets": list(load_presets().values())})
+
+
+@app.get("/api/history")
+def get_history():
+    records = load_history_records()
+    records.sort(key=lambda item: str(item.get("saved_at", "")), reverse=True)
+    return jsonify({"records": [history_summary(record) for record in records]})
+
+
+@app.post("/api/history")
+def save_history():
+    try:
+        record = make_history_record(request.get_json() or {})
+        records = load_history_records()
+        records.append(record)
+        save_history_records(records)
+        return jsonify({"record": history_summary(record)}), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@app.get("/api/history/<record_id>")
+def get_history_record(record_id: str):
+    record = next((item for item in load_history_records() if item.get("id") == record_id), None)
+    if record is None:
+        return jsonify({"error": "检测历史不存在或已删除"}), 404
+    return jsonify({"record": {**record, **history_status(record)}})
+
+
+@app.delete("/api/history")
+def delete_history_records():
+    payload = request.get_json() or {}
+    identifiers = payload.get("ids")
+    if not isinstance(identifiers, list):
+        return jsonify({"error": "ids 必须是历史记录 ID 列表"}), 400
+    ids = {str(item) for item in identifiers if str(item)}
+    if not ids:
+        return jsonify({"error": "请至少选择一条检测历史"}), 400
+    records = load_history_records()
+    kept_records = [record for record in records if record.get("id") not in ids]
+    deleted = len(records) - len(kept_records)
+    if deleted:
+        save_history_records(kept_records)
+    return jsonify({"deleted": deleted})
+
+
+@app.delete("/api/history/<record_id>")
+def delete_history_record(record_id: str):
+    records = load_history_records()
+    kept_records = [record for record in records if record.get("id") != record_id]
+    if len(kept_records) == len(records):
+        return jsonify({"error": "检测历史不存在或已删除"}), 404
+    save_history_records(kept_records)
+    return jsonify({"deleted": 1})
 
 
 if __name__ == "__main__":

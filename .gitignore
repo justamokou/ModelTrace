@@ -7,5 +7,6 @@ node_modules/
 
 # 本地 URL/Key 预设（含加密后的 API Key），禁止提交
 data/presets.json
+data/detection_history.json
 data/private/
 *.modelrace_key

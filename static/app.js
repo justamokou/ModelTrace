@@ -4,11 +4,15 @@ const state = {
   bank: window.BANK_SUMMARIES[window.DEFAULT_BANK_ID],
   unified: window.UNIFIED_SUMMARY,
   presets: [],
+  history: [],
+  activeApiPresetName: "",
 };
 let batchRunning = false;
 let resultVisible = false;
 let activeApiScan = null;
 let activeBatchScan = null;
+let selectedHistoryIds = new Set();
+let openedHistoryId = null;
 
 class ScanCancelledError extends Error {
   constructor() {
@@ -128,7 +132,7 @@ async function runPresetScan(configuration, view, options = {}) {
     const attempted = states.filter((state) => ["done", "invalid", "error"].includes(state)).length;
     result.api_test = { requested: target, attempted, max_attempts: challenges.length, received: outputs.length, errors };
     view.renderProgress && view.renderProgress(states, `测试完成：${outputs.length}/${target} 份有效回答进入归因`);
-    view.renderResult && view.renderResult(result);
+    if (view.renderResult) await view.renderResult(result);
   } else {
     view.setMessage && view.setMessage(result.error || "API 自动测试失败。", "error");
   }
@@ -156,7 +160,11 @@ async function testViaApi(event) {
   const view = {
     showProgress: () => { byId("api-test-progress").hidden = false; },
     renderProgress: renderApiProgress,
-    renderResult,
+    renderResult: (result) => renderResult(result, {
+      testType: "api",
+      sourceName: state.activeApiPresetName,
+      apiModel: configuration.api_model,
+    }),
     setMessage: (text, type) => setMessage(byId("test-message"), text, type),
   };
   try {
@@ -199,6 +207,7 @@ function configForPreset(preset) {
 function activateWorkspace(name) {
   document.querySelectorAll(".workspace").forEach((item) => item.classList.toggle("active", item.id === `workspace-${name}`));
   document.querySelectorAll("[data-workspace]").forEach((item) => item.classList.toggle("active", item.dataset.workspace === name));
+  if (name === "history") loadHistory();
 }
 
 function activateMode(group, name) {
@@ -246,18 +255,19 @@ function renderChallenges() {
 }
 
 function buildResultHtml(payload) {
-  const diagnostics = payload.diagnostics.map((item, index) => `
+  const diagnostics = (payload.diagnostics || []).map((item, index) => `
     <span class="diagnostic ${item.accepted ? "accepted" : "rejected"}">挑战 ${index + 1}: ${item.parsed_numbers} 个数字 · ${item.accepted ? "计入" : "忽略"}</span>
   `).join("");
-  const rows = payload.results.map((item, index) => `
+  const rows = (payload.results || []).map((item, index) => `
     <tr class="${index === 0 ? "winner" : ""}">
       <td>${index + 1}</td><td><strong>${escapeHtml(item.display_name)}</strong></td><td>${escapeHtml(item.family_name)}</td>
       <td><div class="probability-cell"><span><i style="width:${item.probability * 100}%"></i></span><strong>${percent(item.probability)}</strong></div></td>
       <td>${percent(item.profile_similarity)}</td>
     </tr>
   `).join("");
+  const apiErrors = payload.api_test?.errors || [];
   const apiNote = payload.api_test
-    ? `<span>API 获得 ${payload.api_test.received}/${payload.api_test.requested} 份有效回答，实际尝试 ${payload.api_test.attempted}/${payload.api_test.max_attempts}${payload.api_test.errors.length ? `，${payload.api_test.errors.length} 次未采用` : ""}</span>`
+    ? `<span>API 获得 ${payload.api_test.received}/${payload.api_test.requested} 份有效回答，实际尝试 ${payload.api_test.attempted}/${payload.api_test.max_attempts}${apiErrors.length ? `，${apiErrors.length} 次未采用` : ""}</span>`
     : "";
   return `
     <div class="result-summary">
@@ -272,11 +282,197 @@ function buildResultHtml(payload) {
   `;
 }
 
-function renderResult(payload) {
-  byId("result").innerHTML = buildResultHtml(payload);
-  byId("result").hidden = false;
+function historyMethodLabel(testType) {
+  return { manual: "手动测试", api: "API 单次测试", batch: "并发批量检测" }[testType] || "检测";
+}
+
+function buildHistoryAutoSaveStatus() {
+  return `
+    <div class="history-auto-save" aria-live="polite">
+      <span class="history-auto-save-status working">正在自动保存检测历史…</span>
+    </div>
+  `;
+}
+
+async function renderResult(payload, context = {}) {
+  const resultElement = byId("result");
+  resultElement.innerHTML = buildResultHtml(payload) + buildHistoryAutoSaveStatus();
+  resultElement.hidden = false;
   resultVisible = true;
-  byId("result").scrollIntoView({ behavior: "smooth", block: "start" });
+  resultElement.scrollIntoView({ behavior: "smooth", block: "start" });
+  await persistResultToHistory(payload, context, resultElement);
+}
+
+async function persistResultToHistory(result, context, host) {
+  const status = host.querySelector(".history-auto-save-status");
+  try {
+    const response = await fetch("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        test_type: context.testType || "manual",
+        source_name: context.sourceName || "",
+        api_model: context.apiModel || "",
+        result,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "保存检测历史失败。");
+    status.textContent = `已自动保存：${payload.record.label}`;
+    status.className = "history-auto-save-status success";
+    await loadHistory();
+  } catch (error) {
+    status.textContent = error.message || "自动保存失败";
+    status.className = "history-auto-save-status error";
+  }
+}
+
+function formatHistoryTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date);
+}
+
+function isSavedToday(value) {
+  const date = new Date(value);
+  const today = new Date();
+  return !Number.isNaN(date.getTime())
+    && date.getFullYear() === today.getFullYear()
+    && date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate();
+}
+
+function filteredHistory() {
+  const query = byId("history-search").value.trim().toLocaleLowerCase();
+  const method = byId("history-method").value;
+  return state.history.filter((record) => {
+    if (method && record.test_type !== method) return false;
+    if (!query) return true;
+    return [record.label, record.source_name, record.api_model, record.prediction_name, record.family_prediction_name]
+      .some((value) => String(value || "").toLocaleLowerCase().includes(query));
+  });
+}
+
+function renderHistory() {
+  const records = filteredHistory();
+  const currentIds = new Set(state.history.map((record) => record.id));
+  selectedHistoryIds = new Set([...selectedHistoryIds].filter((id) => currentIds.has(id)));
+  const total = state.history.length;
+  const manual = state.history.filter((record) => record.test_type === "manual").length;
+  const api = state.history.filter((record) => record.test_type === "api" || record.test_type === "batch").length;
+  const passed = state.history.filter((record) => record.status === "passed").length;
+  const failed = state.history.filter((record) => record.status === "failed").length;
+  byId("history-total").textContent = String(total);
+  byId("history-today").textContent = String(state.history.filter((record) => isSavedToday(record.saved_at)).length);
+  byId("history-passed").textContent = String(passed);
+  byId("history-failed").textContent = String(failed);
+  byId("history-manual").textContent = String(manual);
+  byId("history-api").textContent = String(api);
+  byId("history-count-badge").textContent = `${total} 条记录`;
+
+  byId("history-list").innerHTML = records.length
+    ? records.map((record) => {
+      const source = [record.source_name, record.api_model].filter(Boolean).join(" · ") || "—";
+      return `
+        <tr>
+          <td class="history-check-column"><input class="history-row-check" type="checkbox" value="${escapeHtml(record.id)}"${selectedHistoryIds.has(record.id) ? " checked" : ""} aria-label="选择 ${escapeHtml(record.label)}"></td>
+          <td class="history-record-cell"><strong>${escapeHtml(record.label)}</strong><span>${escapeHtml(source)}</span></td>
+          <td><span class="history-method ${escapeHtml(record.test_type)}">${historyMethodLabel(record.test_type)}</span></td>
+          <td><span class="history-status ${escapeHtml(record.status || "failed")}" title="${escapeHtml(record.status_reason || "")}">${escapeHtml(record.status_label || "检测未通过")}</span></td>
+          <td><strong>${escapeHtml(record.prediction_name || "—")}</strong><span class="history-family">${escapeHtml(record.family_prediction_name || "")}</span></td>
+          <td>${percent(Number(record.probability) || 0)}</td>
+          <td>${record.used_outputs || 0}/3</td>
+          <td>${formatHistoryTime(record.saved_at)}</td>
+          <td class="history-row-actions"><button class="history-row-button" data-history-open="${escapeHtml(record.id)}" type="button">查看</button><button class="history-row-button danger" data-history-delete="${escapeHtml(record.id)}" type="button">删除</button></td>
+        </tr>
+      `;
+    }).join("")
+    : `<tr><td class="history-empty" colspan="9">暂无符合条件的检测记录</td></tr>`;
+
+  const allVisibleSelected = records.length > 0 && records.every((record) => selectedHistoryIds.has(record.id));
+  const someVisibleSelected = records.some((record) => selectedHistoryIds.has(record.id));
+  const selectAll = byId("history-select-all");
+  selectAll.checked = allVisibleSelected;
+  selectAll.indeterminate = !allVisibleSelected && someVisibleSelected;
+  selectAll.disabled = records.length === 0;
+  byId("history-selected-count").textContent = selectedHistoryIds.size ? `已选择 ${selectedHistoryIds.size} 条记录` : "未选择记录";
+  byId("history-delete-selected").disabled = selectedHistoryIds.size === 0;
+}
+
+async function loadHistory() {
+  try {
+    const response = await fetch("/api/history");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "读取检测历史失败。");
+    state.history = payload.records || [];
+    if (openedHistoryId && !state.history.some((record) => record.id === openedHistoryId)) {
+      openedHistoryId = null;
+      byId("history-detail").hidden = true;
+    }
+    renderHistory();
+  } catch (error) {
+    state.history = [];
+    renderHistory();
+    setMessage(byId("history-message"), error.message || "读取检测历史失败。", "error");
+  }
+}
+
+function toggleHistorySelection(recordId, selected) {
+  if (selected) selectedHistoryIds.add(recordId);
+  else selectedHistoryIds.delete(recordId);
+  renderHistory();
+}
+
+function toggleAllHistorySelection() {
+  const records = filteredHistory();
+  if (byId("history-select-all").checked) records.forEach((record) => selectedHistoryIds.add(record.id));
+  else records.forEach((record) => selectedHistoryIds.delete(record.id));
+  renderHistory();
+}
+
+async function openHistoryRecord(recordId) {
+  try {
+    const response = await fetch(`/api/history/${encodeURIComponent(recordId)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "读取检测详情失败。");
+    const record = payload.record;
+    openedHistoryId = record.id;
+    const source = [record.source_name, record.api_model].filter(Boolean).join(" · ");
+    byId("history-detail").innerHTML = `
+      <div class="history-detail-head"><div><strong>${escapeHtml(record.label)}</strong><span>${historyMethodLabel(record.test_type)}${source ? ` · ${escapeHtml(source)}` : ""} · ${formatHistoryTime(record.saved_at)}</span></div><div class="history-detail-actions"><span class="history-status ${escapeHtml(record.status || "failed")}" title="${escapeHtml(record.status_reason || "")}">${escapeHtml(record.status_label || "检测未通过")}</span><button id="history-detail-close" class="button secondary" type="button">关闭详情</button></div></div>
+      <div class="history-detail-result">${buildResultHtml(record.result)}</div>
+    `;
+    byId("history-detail").hidden = false;
+    byId("history-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    setMessage(byId("history-message"), error.message || "读取检测详情失败。", "error");
+  }
+}
+
+async function deleteHistoryRecords(ids) {
+  if (!ids.length) return;
+  const prompt = ids.length === 1 ? "确定删除这条检测历史吗？" : `确定删除选中的 ${ids.length} 条检测历史吗？`;
+  if (!window.confirm(prompt)) return;
+  try {
+    const response = await fetch("/api/history", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "删除检测历史失败。");
+    ids.forEach((id) => selectedHistoryIds.delete(id));
+    if (ids.includes(openedHistoryId)) {
+      openedHistoryId = null;
+      byId("history-detail").hidden = true;
+    }
+    setMessage(byId("history-message"), `已删除 ${payload.deleted} 条检测历史。`, "success");
+    await loadHistory();
+  } catch (error) {
+    setMessage(byId("history-message"), error.message || "删除检测历史失败。", "error");
+  }
 }
 
 async function analyzeManual() {
@@ -291,7 +487,7 @@ async function analyzeManual() {
   const payload = await response.json();
   if (response.ok) {
     setMessage(byId("test-message"), "");
-    renderResult(payload);
+    await renderResult(payload, { testType: "manual" });
   } else {
     setMessage(byId("test-message"), payload.error || "无法完成归因。", "error");
     byId("result").hidden = true;
@@ -441,8 +637,13 @@ function makeBatchView(preset, host) {
       }).join("");
     },
     renderResult: (result) => {
-      resultEl.innerHTML = buildResultHtml(result);
+      resultEl.innerHTML = buildResultHtml(result) + buildHistoryAutoSaveStatus();
       resultEl.hidden = false;
+      return persistResultToHistory(result, {
+        testType: "batch",
+        sourceName: preset.name,
+        apiModel: preset.model,
+      }, resultEl);
     },
     markCancelled: () => {
       progressEl.hidden = false;
@@ -539,6 +740,7 @@ async function loadSelectedPreset() {
   byId("test-api-key").value = preset.api_key || "";
   byId("test-temperature").value = preset.temperature === "" ? "" : preset.temperature;
   byId("preset-name").value = "";
+  state.activeApiPresetName = preset.name;
   activateMode("test", "api");
   setMessage(byId("test-message"), `已载入预设「${preset.name}」`, "success");
 }
@@ -568,6 +770,7 @@ async function saveCurrentPreset() {
   }
   renderPresets(payload.presets || []);
   byId("preset-select").value = name;
+  state.activeApiPresetName = name;
   setMessage(byId("test-message"), `已保存预设「${name}」，下次启动可直接载入。`, "success");
 }
 
@@ -586,6 +789,7 @@ async function deleteSelectedPreset() {
     return;
   }
   renderPresets(payload.presets || []);
+  if (state.activeApiPresetName === name) state.activeApiPresetName = "";
   setMessage(byId("test-message"), `已删除预设「${name}」。`, "success");
 }
 
@@ -619,6 +823,7 @@ async function renameSelectedPreset() {
     checkbox.checked = remapped.has(checkbox.value);
   });
   byId("preset-select").value = newName;
+  if (state.activeApiPresetName === name) state.activeApiPresetName = newName;
   updateCheckedCount();
   setMessage(byId("test-message"), `已将预设「${name}」重命名为「${newName}」。`, "success");
 }
@@ -727,6 +932,9 @@ byId("regenerate").addEventListener("click", loadChallenges);
 byId("analyze").addEventListener("click", analyzeManual);
 byId("api-test-form").addEventListener("submit", testViaApi);
 byId("api-test-stop").addEventListener("click", stopApiScan);
+["test-api-base", "test-api-model", "test-api-key", "test-temperature"].forEach((id) => {
+  byId(id).addEventListener("input", () => { state.activeApiPresetName = ""; });
+});
 byId("preset-load").addEventListener("click", loadSelectedPreset);
 byId("preset-rename").addEventListener("click", renameSelectedPreset);
 byId("preset-save").addEventListener("click", saveCurrentPreset);
@@ -784,7 +992,28 @@ byId("preset-batch-list").addEventListener("dragend", () => {
 byId("auto-enrollment").addEventListener("submit", enrollAutomatically);
 byId("show-create-bank").addEventListener("click", () => { byId("create-bank-form").hidden = !byId("create-bank-form").hidden; });
 byId("create-bank-form").addEventListener("submit", createBank);
+byId("history-refresh").addEventListener("click", () => loadHistory());
+byId("history-search").addEventListener("input", renderHistory);
+byId("history-method").addEventListener("change", renderHistory);
+byId("history-select-all").addEventListener("change", toggleAllHistorySelection);
+byId("history-delete-selected").addEventListener("click", () => deleteHistoryRecords([...selectedHistoryIds]));
+byId("history-list").addEventListener("change", (event) => {
+  if (event.target.matches(".history-row-check")) toggleHistorySelection(event.target.value, event.target.checked);
+});
+byId("history-list").addEventListener("click", (event) => {
+  const openButton = event.target.closest("[data-history-open]");
+  if (openButton) openHistoryRecord(openButton.dataset.historyOpen);
+  const deleteButton = event.target.closest("[data-history-delete]");
+  if (deleteButton) deleteHistoryRecords([deleteButton.dataset.historyDelete]);
+});
+byId("history-detail").addEventListener("click", (event) => {
+  if (event.target.id === "history-detail-close") {
+    openedHistoryId = null;
+    byId("history-detail").hidden = true;
+  }
+});
 
 renderInventory();
 loadChallenges();
 reloadPresets();
+loadHistory();

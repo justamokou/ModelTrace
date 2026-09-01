@@ -17,6 +17,7 @@
       <nav aria-label="工作区">
         <button class="nav-button active" data-workspace="test" type="button"><span class="nav-icon">01</span><span><strong>模型测试</strong></span></button>
         <button class="nav-button" data-workspace="library" type="button"><span class="nav-icon">02</span><span><strong>指纹库管理</strong></span></button>
+        <button class="nav-button" data-workspace="history" type="button"><span class="nav-icon">03</span><span><strong>检测历史</strong></span></button>
       </nav>
     </aside>
 
@@ -120,6 +121,43 @@
         </form>
 
         <div id="enrollment-message" class="message" hidden></div>
+      </section>
+
+      <section id="workspace-history" class="workspace">
+        <div class="page-header">
+          <h1>检测历史</h1>
+          <div class="history-header-actions"><span id="history-count-badge" class="privacy-badge">0 条记录</span><button id="history-refresh" class="button secondary" type="button">刷新</button></div>
+        </div>
+
+        <section class="history-overview" aria-label="历史记录概览">
+          <div><span>已保存记录</span><strong id="history-total">0</strong></div>
+          <div><span>今日保存</span><strong id="history-today">0</strong></div>
+          <div><span>检测通过</span><strong id="history-passed">0</strong></div>
+          <div><span>检测未通过</span><strong id="history-failed">0</strong></div>
+          <div><span>手动检测</span><strong id="history-manual">0</strong></div>
+          <div><span>接口检测</span><strong id="history-api">0</strong></div>
+        </section>
+
+        <section class="history-panel">
+          <div class="history-filters">
+            <label><span>搜索</span><input id="history-search" type="search" placeholder="记录名称、模型或预测结果"></label>
+            <label><span>检测方式</span><select id="history-method"><option value="">全部方式</option><option value="manual">手动测试</option><option value="api">API 单次测试</option><option value="batch">并发批量检测</option></select></label>
+          </div>
+          <div class="history-list-toolbar">
+            <label class="history-select-all"><input id="history-select-all" type="checkbox"><span>全选当前结果</span></label>
+            <span id="history-selected-count">未选择记录</span>
+            <button id="history-delete-selected" class="button secondary history-delete-button" type="button" disabled>删除已选</button>
+          </div>
+          <div class="table-wrap">
+            <table class="history-table">
+              <thead><tr><th class="history-check-column"></th><th>记录</th><th>检测方式</th><th>检测状态</th><th>归因结果</th><th>概率</th><th>有效查询</th><th>保存时间</th><th>操作</th></tr></thead>
+              <tbody id="history-list"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div id="history-message" class="message" hidden></div>
+        <section id="history-detail" class="history-detail" hidden aria-live="polite"></section>
       </section>
     </main>
   </div>
