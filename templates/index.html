@@ -26,7 +26,8 @@
 
         <div class="mode-tabs" role="tablist" aria-label="测试方式">
           <button class="mode-tab active" data-test-mode="manual" type="button">手动测试</button>
-          <button class="mode-tab" data-test-mode="api" type="button">API 自动测试</button>
+          <button class="mode-tab" data-test-mode="api" type="button">API 单次测试</button>
+          <button class="mode-tab" data-test-mode="batch" type="button">并发批量检测</button>
         </div>
 
         <section id="test-manual" class="mode-panel active">
@@ -35,7 +36,7 @@
           <div class="action-row"><button id="analyze" class="button primary" type="button">计算归因概率</button></div>
         </section>
 
-        <section id="test-api" class="mode-panel">
+        <section id="test-presets" class="mode-panel" data-show-for="api batch">
           <div class="preset-panel">
             <div class="preset-heading"><strong>本地预设（URL / Key）</strong><span>保存在本机，下次启动快速调取</span></div>
             <div class="preset-row">
@@ -46,8 +47,11 @@
               <label class="preset-picker"><span>新预设名称</span><input id="preset-name" placeholder="例如：OAIPro · Claude"></label>
               <button id="preset-save" class="button primary" type="button">保存当前</button>
             </div>
-            <p class="preset-note">在下方填写 Base URL / 模型名 / API Key 后点击“保存当前”，即可存入一整套配置；选择单个预设点击“载入”可回填表单，点击“重命名”可修改名称。</p>
+            <p class="preset-note">填写 Base URL / 模型名 / API Key 后点击“保存当前”，即可存入一整套配置；选择单个预设点击“载入”可回填表单（自动切到 API 单次测试），点击“重命名”可修改名称。</p>
           </div>
+        </section>
+
+        <section id="test-api" class="mode-panel">
           <form id="api-test-form" class="form-panel">
             <div class="preset-heading"><strong>单次检测</strong><span>对单个接口配置执行完整检测</span></div>
             <div class="form-grid two">
@@ -63,6 +67,9 @@
             <div class="progress-track"><i id="api-progress-fill"></i></div>
             <div id="api-progress-steps" class="progress-steps"></div>
           </section>
+        </section>
+
+        <section id="test-batch" class="mode-panel">
           <section class="batch-panel">
             <div class="preset-heading"><strong>并发批量检测</strong><span>勾选多个预设，同时发起独立检测</span></div>
             <div class="preset-batch-bar">

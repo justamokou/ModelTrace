@@ -6,6 +6,7 @@ const state = {
   presets: [],
 };
 let batchRunning = false;
+let resultVisible = false;
 
 const byId = (id) => document.getElementById(id);
 
@@ -106,6 +107,7 @@ async function testViaApi(event) {
   const button = event.currentTarget.querySelector("button[type=submit]");
   button.disabled = true;
   byId("result").hidden = true;
+  resultVisible = false;
   setMessage(byId("test-message"), "");
   const configuration = {
     base_url: byId("test-api-base").value,
@@ -141,14 +143,18 @@ function activateWorkspace(name) {
 
 function activateMode(group, name) {
   document.querySelectorAll(`[data-${group}-mode]`).forEach((item) => item.classList.toggle("active", item.dataset[`${group}Mode`] === name));
-  document.querySelectorAll(`#workspace-${group === "test" ? "test" : "library"} .mode-panel`).forEach((item) => {
-    item.classList.toggle("active", item.id === `${group}-${name}` || item.id === `library-${name}`);
+  document.querySelectorAll(`#workspace-${group} .mode-panel`).forEach((item) => {
+    const modes = (item.dataset.showFor || "").split(/\s+/).filter(Boolean);
+    const active = modes.length ? modes.includes(name) : item.id === `${group}-${name}`;
+    item.classList.toggle("active", active);
   });
+  if (group === "test") byId("result").hidden = name === "batch" || !resultVisible;
 }
 
 async function loadChallenges() {
   byId("regenerate").disabled = true;
   byId("result").hidden = true;
+  resultVisible = false;
   setMessage(byId("test-message"), "");
   const response = await fetch("/api/challenges");
   state.challenges = (await response.json()).challenges;
@@ -209,6 +215,7 @@ function buildResultHtml(payload) {
 function renderResult(payload) {
   byId("result").innerHTML = buildResultHtml(payload);
   byId("result").hidden = false;
+  resultVisible = true;
   byId("result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -228,6 +235,7 @@ async function analyzeManual() {
   } else {
     setMessage(byId("test-message"), payload.error || "无法完成归因。", "error");
     byId("result").hidden = true;
+    resultVisible = false;
   }
   button.disabled = false;
 }
@@ -392,6 +400,8 @@ async function startBatchScan() {
   batchRunning = true;
   runButton.disabled = true;
   runButton.textContent = "检测中……";
+  byId("result").hidden = true;
+  resultVisible = false;
   resultsHost.innerHTML = "";
   setMessage(byId("test-message"), `已并发启动 ${presets.length} 个预设的检测。`, "working");
 
@@ -438,6 +448,7 @@ async function loadSelectedPreset() {
   byId("test-api-key").value = preset.api_key || "";
   byId("test-temperature").value = preset.temperature === "" ? "" : preset.temperature;
   byId("preset-name").value = "";
+  activateMode("test", "api");
   setMessage(byId("test-message"), `已载入预设「${preset.name}」`, "success");
 }
 
