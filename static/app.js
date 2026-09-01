@@ -7,6 +7,23 @@ const state = {
 };
 let batchRunning = false;
 let resultVisible = false;
+let activeApiScan = null;
+let activeBatchScan = null;
+
+class ScanCancelledError extends Error {
+  constructor() {
+    super("检测已停止");
+    this.name = "ScanCancelledError";
+  }
+}
+
+function ensureScanActive(signal) {
+  if (signal && signal.aborted) throw new ScanCancelledError();
+}
+
+function isScanCancelled(error) {
+  return error instanceof ScanCancelledError || error?.name === "AbortError";
+}
 
 const byId = (id) => document.getElementById(id);
 
@@ -31,14 +48,18 @@ function setMessage(element, text, type = "error") {
   element.hidden = !text;
 }
 
-async function runPresetScan(configuration, view) {
+async function runPresetScan(configuration, view, options = {}) {
   /* 单套预设检测核心：串行探测最多 6 次以取得 3 份有效回答，再归因。
      进度与结果都通过 view 渲染，供单个表单与批量并发共用。 */
+  const { signal } = options;
+  ensureScanActive(signal);
   view.setMessage && view.setMessage("", "working");
-  const challengeResponse = await fetch("/api/challenges");
+  const challengeResponse = await fetch("/api/challenges", { signal });
   const firstBatch = (await challengeResponse.json()).challenges;
-  const retryResponse = await fetch("/api/challenges");
+  ensureScanActive(signal);
+  const retryResponse = await fetch("/api/challenges", { signal });
   const challenges = firstBatch.concat((await retryResponse.json()).challenges);
+  ensureScanActive(signal);
   const states = challenges.map(() => "pending");
   const outputs = [];
   const errors = [];
@@ -47,6 +68,7 @@ async function runPresetScan(configuration, view) {
   view.renderProgress && view.renderProgress(states, "已生成独立挑战，准备调用模型");
 
   for (let index = 0; index < challenges.length && outputs.length < target; index += 1) {
+    ensureScanActive(signal);
     states[index] = "working";
     view.renderProgress && view.renderProgress(states, `正在进行第 ${index + 1} 次尝试，等待模型完整输出……`);
     try {
@@ -58,8 +80,10 @@ async function runPresetScan(configuration, view) {
           prompt: challenges[index].prompt,
           expected_count: challenges[index].expected_count,
         }),
+        signal,
       });
       const payload = await response.json();
+      ensureScanActive(signal);
       if (!response.ok) throw new Error(payload.error || "接口请求失败");
       if (payload.accepted) {
         outputs.push({ text: payload.text, expected_count: challenges[index].expected_count });
@@ -69,6 +93,11 @@ async function runPresetScan(configuration, view) {
         states[index] = "invalid";
       }
     } catch (error) {
+      if (isScanCancelled(error) || signal?.aborted) {
+        states[index] = "cancelled";
+        view.renderProgress && view.renderProgress(states, "检测已停止");
+        throw new ScanCancelledError();
+      }
       errors.push(`尝试 ${index + 1}: ${error.message}`);
       states[index] = "error";
     }
@@ -78,6 +107,7 @@ async function runPresetScan(configuration, view) {
   if (outputs.length === target) {
     states.forEach((state, index) => { if (state === "pending") states[index] = "skipped"; });
   }
+  ensureScanActive(signal);
 
   if (!outputs.length) {
     view.renderProgress && view.renderProgress(states, "六次尝试后仍没有可用回答");
@@ -90,8 +120,10 @@ async function runPresetScan(configuration, view) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ outputs }),
+    signal,
   });
   const result = await analysisResponse.json();
+  ensureScanActive(signal);
   if (analysisResponse.ok) {
     const attempted = states.filter((state) => ["done", "invalid", "error"].includes(state)).length;
     result.api_test = { requested: target, attempted, max_attempts: challenges.length, received: outputs.length, errors };
@@ -104,8 +136,14 @@ async function runPresetScan(configuration, view) {
 
 async function testViaApi(event) {
   event.preventDefault();
+  if (activeApiScan) return;
   const button = event.currentTarget.querySelector("button[type=submit]");
+  const stopButton = byId("api-test-stop");
+  const scan = { controller: new AbortController() };
+  activeApiScan = scan;
   button.disabled = true;
+  stopButton.hidden = false;
+  stopButton.disabled = false;
   byId("result").hidden = true;
   resultVisible = false;
   setMessage(byId("test-message"), "");
@@ -121,8 +159,30 @@ async function testViaApi(event) {
     renderResult,
     setMessage: (text, type) => setMessage(byId("test-message"), text, type),
   };
-  await runPresetScan(configuration, view);
-  button.disabled = false;
+  try {
+    await runPresetScan(configuration, view, { signal: scan.controller.signal });
+  } catch (error) {
+    if (isScanCancelled(error)) {
+      byId("api-progress-status").textContent = "检测已停止";
+      setMessage(byId("test-message"), "检测已停止。", "working");
+    } else {
+      setMessage(byId("test-message"), error.message || "检测失败。", "error");
+    }
+  } finally {
+    if (activeApiScan === scan) activeApiScan = null;
+    button.disabled = false;
+    stopButton.hidden = true;
+    stopButton.disabled = false;
+  }
+}
+
+function stopApiScan() {
+  if (!activeApiScan) return;
+  activeApiScan.controller.abort();
+  byId("api-test-progress").hidden = false;
+  byId("api-progress-status").textContent = "正在停止检测……";
+  byId("api-test-stop").disabled = true;
+  setMessage(byId("test-message"), "正在停止检测……", "working");
 }
 
 function configForPreset(preset) {
@@ -249,7 +309,7 @@ function renderApiProgress(states, status) {
   byId("api-progress-count").textContent = `有效 ${valid}/${target} · 已尝试 ${attempted}/${states.length}`;
   byId("api-progress-fill").style.width = `${(valid / target) * 100}%`;
   byId("api-progress-steps").innerHTML = states.map((state, index) => {
-    const labels = { pending: "等待", working: "请求中", done: "有效", invalid: "数字不足", error: "接口失败", skipped: "无需调用" };
+    const labels = { pending: "等待", working: "请求中", done: "有效", invalid: "数字不足", error: "接口失败", skipped: "无需调用", cancelled: "已停止" };
     return `<span class="progress-step ${state}"><b>${index + 1}</b>挑战 ${index + 1} · ${labels[state]}</span>`;
   }).join("");
 }
@@ -284,6 +344,7 @@ function updateCheckedCount() {
   byId("preset-select-all").checked = checkboxes.length > 0 && checked === checkboxes.length;
   byId("preset-select-all").disabled = checkboxes.length === 0;
   byId("preset-batch-run").disabled = checkboxes.length === 0 || batchRunning;
+  byId("preset-batch-stop").hidden = !batchRunning;
 }
 
 function renderPresetBatchList() {
@@ -375,13 +436,17 @@ function makeBatchView(preset, host) {
       countEl.textContent = `有效 ${valid}/3 · 已尝试 ${attempted}/${states.length}`;
       fillEl.style.width = `${(valid / 3) * 100}%`;
       stepsEl.innerHTML = states.map((item, index) => {
-        const labels = { pending: "等待", working: "请求中", done: "有效", invalid: "数字不足", error: "接口失败", skipped: "无需调用" };
+        const labels = { pending: "等待", working: "请求中", done: "有效", invalid: "数字不足", error: "接口失败", skipped: "无需调用", cancelled: "已停止" };
         return `<span class="progress-step ${item}"><b>${index + 1}</b>挑战 ${index + 1} · ${labels[item]}</span>`;
       }).join("");
     },
     renderResult: (result) => {
       resultEl.innerHTML = buildResultHtml(result);
       resultEl.hidden = false;
+    },
+    markCancelled: () => {
+      progressEl.hidden = false;
+      statusEl.textContent = "检测已停止";
     },
     setMessage: (text, type) => setMessage(query(".batch-message"), text, type),
   };
@@ -396,9 +461,14 @@ async function startBatchScan() {
   }
   const presets = names.map((name) => state.presets.find((preset) => preset.name === name)).filter(Boolean);
   const runButton = byId("preset-batch-run");
+  const stopButton = byId("preset-batch-stop");
   const resultsHost = byId("batch-test-results");
+  const scan = { controller: new AbortController() };
+  activeBatchScan = scan;
   batchRunning = true;
   runButton.disabled = true;
+  stopButton.hidden = false;
+  stopButton.disabled = false;
   runButton.textContent = "检测中……";
   byId("result").hidden = true;
   resultVisible = false;
@@ -409,17 +479,31 @@ async function startBatchScan() {
   const outcomes = await Promise.all(
     views.map(async (view) => {
       try {
-        await runPresetScan(configForPreset(view.preset), view);
+        await runPresetScan(configForPreset(view.preset), view, { signal: scan.controller.signal });
         return { name: view.preset.name, ok: true };
       } catch (error) {
+        if (isScanCancelled(error)) {
+          view.markCancelled && view.markCancelled();
+          view.setMessage("检测已停止。", "working");
+          return { name: view.preset.name, ok: false, cancelled: true };
+        }
         view.setMessage(error.message || "检测失败。", "error");
         return { name: view.preset.name, ok: false };
       }
     })
   );
+  const cancelled = scan.controller.signal.aborted;
   batchRunning = false;
+  if (activeBatchScan === scan) activeBatchScan = null;
   updateCheckedCount();
   runButton.textContent = "并发检测勾选预设";
+  stopButton.hidden = true;
+  stopButton.disabled = false;
+  if (cancelled) {
+    setMessage(byId("test-message"), "检测已停止。已完成的结果仍保留在下方。", "working");
+    resultsHost.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
   const failed = outcomes.filter((item) => !item.ok).map((item) => item.name);
   setMessage(
     byId("test-message"),
@@ -427,6 +511,13 @@ async function startBatchScan() {
     failed.length ? "error" : "success"
   );
   resultsHost.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function stopBatchScan() {
+  if (!activeBatchScan) return;
+  activeBatchScan.controller.abort();
+  byId("preset-batch-stop").disabled = true;
+  setMessage(byId("test-message"), "正在停止检测……", "working");
 }
 
 async function reloadPresets() {
@@ -635,12 +726,14 @@ byId("bank-select").addEventListener("change", (event) => selectBank(event.targe
 byId("regenerate").addEventListener("click", loadChallenges);
 byId("analyze").addEventListener("click", analyzeManual);
 byId("api-test-form").addEventListener("submit", testViaApi);
+byId("api-test-stop").addEventListener("click", stopApiScan);
 byId("preset-load").addEventListener("click", loadSelectedPreset);
 byId("preset-rename").addEventListener("click", renameSelectedPreset);
 byId("preset-save").addEventListener("click", saveCurrentPreset);
 byId("preset-delete").addEventListener("click", deleteSelectedPreset);
 byId("preset-select-all").addEventListener("change", toggleAllPresets);
 byId("preset-batch-run").addEventListener("click", startBatchScan);
+byId("preset-batch-stop").addEventListener("click", stopBatchScan);
 byId("preset-batch-list").addEventListener("change", (event) => {
   if (event.target.matches("input[type=checkbox]")) updateCheckedCount();
 });

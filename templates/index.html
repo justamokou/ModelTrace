@@ -60,7 +60,7 @@
               <label><span>API Key</span><input id="test-api-key" type="password" required autocomplete="off"></label>
               <label><span>温度（可选）</span><input id="test-temperature" type="number" min="0" max="2" step="0.1" placeholder="接口默认"></label>
             </div>
-            <div class="form-footer"><button class="button primary" type="submit">开始测试</button></div>
+            <div class="form-footer"><button class="button secondary stop-button" id="api-test-stop" type="button" hidden>停止检测</button><button class="button primary" type="submit">开始测试</button></div>
           </form>
           <section id="api-test-progress" class="progress-panel" hidden aria-live="polite">
             <div class="progress-heading"><strong id="api-progress-status">准备测试</strong><span id="api-progress-count">有效 0/3 · 已尝试 0/6</span></div>
@@ -75,7 +75,7 @@
             <div class="preset-batch-bar">
               <label class="preset-batch-toggle"><input id="preset-select-all" type="checkbox"><span>全选</span></label>
               <span class="preset-batch-count">已勾选 <strong id="preset-checked-count">0</strong> 个</span>
-              <button id="preset-batch-run" class="button primary" type="button">并发检测勾选预设</button>
+              <div class="batch-actions"><button id="preset-batch-stop" class="button secondary stop-button" type="button" hidden>停止检测</button><button id="preset-batch-run" class="button primary" type="button">并发检测勾选预设</button></div>
             </div>
             <div id="preset-batch-list" class="preset-batch-list"></div>
             <p class="preset-note">勾选多个已保存的预设后点击“并发检测勾选预设”，每个预设独立完成检测与归因，结果在下方并列展示；直接拖拽预设条目即可调整顺序，排序自动保存。</p>

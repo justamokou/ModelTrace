@@ -92,7 +92,9 @@ button:disabled { cursor: wait; opacity: .6; }
 .preset-batch-toggle input { width: 15px; height: 15px; cursor: pointer; }
 .preset-batch-count { color: var(--muted); font-size: 11px; }
 .preset-batch-count strong { color: var(--primary-dark); font-size: 13px; }
-.preset-batch-bar .button { margin-left: auto; }
+.batch-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.stop-button { color: var(--danger); border-color: #f3c7c2; background: var(--danger-soft); }
+.stop-button:hover { background: #ffe4e0; }
 .preset-batch-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 34px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-soft); }
 .preset-batch-item { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: 12px; cursor: grab; user-select: none; }
 .preset-batch-item:active { cursor: grabbing; }
@@ -123,7 +125,8 @@ button:disabled { cursor: wait; opacity: .6; }
   .preset-row .button { width: 100%; }
   .preset-picker select, .preset-picker input { width: 100%; min-width: 0; }
   .preset-batch-bar { flex-wrap: wrap; }
-  .preset-batch-bar .button { width: 100%; margin-left: 0; }
+  .batch-actions { width: 100%; margin-left: 0; }
+  .batch-actions .button { width: auto; flex: 1; }
   .batch-result-head { flex-direction: column; gap: 4px; }
 }
 
